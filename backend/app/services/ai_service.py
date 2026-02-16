@@ -60,17 +60,16 @@ class AIService:
     # ── Warm-up: Load models once at startup ──────────
 
     async def warm_up(self):
-        """Pre-load all AI models so first request is fast. Call on app startup."""
+        """Lightweight startup — models load lazily on first use to save RAM."""
         if self._warmed_up:
             return
         async with self._warmup_lock:
             if self._warmed_up:
                 return
-            print("🔄 Warming up AI models...")
+            print("🔄 Initializing AI service (lazy mode)...")
 
-            # 1. Load embedding model
-            _ = self.embedding_model
-            print("  ✅ SentenceTransformer loaded")
+            # 1. Skip embedding model at startup — loads on first use
+            # This saves ~400MB RAM, critical for Render free tier (512MB)
 
             # 2. Create persistent HTTP client for Ollama
             self._http_client = httpx.AsyncClient(
@@ -78,24 +77,18 @@ class AIService:
                 limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
             )
 
-            # 3. Warm Ollama with a tiny request so the model loads into memory
+            # 3. Ping Ollama (non-blocking, don't load model yet)
             try:
-                await self._http_client.post(
-                    f"{settings.OLLAMA_BASE_URL}/api/generate",
-                    json={
-                        "model": "llama3",
-                        "prompt": "Hello",
-                        "system": "Reply with 'ready'",
-                        "stream": False,
-                        "options": {"num_predict": 5},
-                    },
-                )
-                print("  ✅ Ollama llama3 model warmed")
+                resp = await self._http_client.get(f"{settings.OLLAMA_BASE_URL}/api/tags")
+                if resp.status_code == 200:
+                    print("  ✅ Ollama is reachable")
+                else:
+                    print(f"  ⚠️ Ollama responded with status {resp.status_code}")
             except Exception as e:
-                print(f"  ⚠️ Ollama warm-up failed (will retry on first call): {e}")
+                print(f"  ⚠️ Ollama not reachable (will retry on first call): {e}")
 
             self._warmed_up = True
-            print("✅ AI Engine ready — all models warm")
+            print("✅ AI Engine ready — models will load on first use")
 
     async def shutdown(self):
         """Cleanup on app shutdown."""
