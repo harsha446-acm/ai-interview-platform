@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { interviewAPI } from '../services/api';
 import toast from 'react-hot-toast';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Briefcase, ArrowRight } from 'lucide-react';
 
 export default function CreateSession() {
   const navigate = useNavigate();
@@ -37,53 +37,62 @@ export default function CreateSession() {
     }
   };
 
+  const inputClass = "w-full px-4 py-3 bg-gray-50/80 border border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none transition-all";
+
   return (
     <div className="max-w-2xl mx-auto px-4 py-12">
-      <h1 className="text-3xl font-bold text-gray-900 mb-2">Create Interview Session</h1>
-      <p className="text-gray-500 mb-8">Set up a new interview and invite candidates.</p>
+      <div className="slide-up">
+        <div className="flex items-center gap-3 mb-2">
+          <div className="w-10 h-10 rounded-xl gradient-bg flex items-center justify-center shadow-sm">
+            <Briefcase className="text-white" size={20} />
+          </div>
+          <h1 className="text-3xl font-bold text-gray-900">Create Interview Session</h1>
+        </div>
+        <p className="text-gray-500 mb-8 ml-[52px]">Set up a new interview and invite candidates.</p>
+      </div>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8">
+      <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-sm border border-gray-100 p-8">
         <form onSubmit={handleSubmit} className="space-y-6">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Job Role *</label>
+            <label className="block text-sm font-semibold text-gray-700 mb-1.5">Job Role *</label>
             <input
               name="job_role"
               value={form.job_role}
               onChange={handleChange}
               required
               placeholder="e.g. Software Engineer"
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 outline-none"
+              className={inputClass}
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Company Name</label>
+            <label className="block text-sm font-semibold text-gray-700 mb-1.5">Company Name</label>
             <input
               name="company_name"
               value={form.company_name}
               onChange={handleChange}
               placeholder="e.g. Acme Corp"
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 outline-none"
+              className={inputClass}
             />
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Scheduled Date & Time *</label>
+              <label className="block text-sm font-semibold text-gray-700 mb-1.5">Scheduled Date & Time *</label>
               <input
                 name="scheduled_time"
                 type="datetime-local"
                 value={form.scheduled_time}
                 onChange={handleChange}
                 required
-                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 outline-none"
+                className={inputClass}
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Duration (minutes)</label>
+              <label className="block text-sm font-semibold text-gray-700 mb-1.5">Duration (minutes)</label>
               <select
                 name="duration_minutes"
                 value={form.duration_minutes}
                 onChange={handleChange}
-                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 outline-none"
+                className={inputClass}
               >
                 {[15, 30, 45, 60, 90, 120].map((m) => (
                   <option key={m} value={m}>{m} min</option>
@@ -92,7 +101,7 @@ export default function CreateSession() {
             </div>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Job Description *</label>
+            <label className="block text-sm font-semibold text-gray-700 mb-1.5">Job Description *</label>
             <textarea
               name="job_description"
               value={form.job_description}
@@ -100,18 +109,18 @@ export default function CreateSession() {
               required
               rows={5}
               placeholder="Paste the full job description here. Include required skills, responsibilities, qualifications, and tools/technologies..."
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 outline-none resize-none"
+              className={inputClass + " resize-none"}
             />
-            <p className="mt-1 text-xs text-gray-400">AI will generate interview questions based on this JD.</p>
+            <p className="mt-1.5 text-xs text-gray-400">AI will generate interview questions based on this JD.</p>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Experience Level *</label>
+            <label className="block text-sm font-semibold text-gray-700 mb-1.5">Experience Level *</label>
             <select
               name="experience_level"
               value={form.experience_level}
               onChange={handleChange}
               required
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 outline-none"
+              className={inputClass}
             >
               <option value="fresher">Fresher (0-1 years)</option>
               <option value="junior">Junior (1-3 years)</option>
@@ -121,23 +130,26 @@ export default function CreateSession() {
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+            <label className="block text-sm font-semibold text-gray-700 mb-1.5">Description</label>
             <textarea
               name="description"
               value={form.description}
               onChange={handleChange}
               rows={3}
               placeholder="Optional session description or instructions for candidates..."
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 outline-none resize-none"
+              className={inputClass + " resize-none"}
             />
           </div>
           <button
             type="submit"
             disabled={loading}
-            className="w-full gradient-bg text-white py-3 rounded-xl font-semibold flex items-center justify-center space-x-2 hover:opacity-90 transition disabled:opacity-50"
+            className="w-full gradient-bg text-white py-3.5 rounded-xl font-semibold flex items-center justify-center gap-2 hover:opacity-90 transition-all disabled:opacity-50 shadow-md hover:shadow-lg"
           >
-            {loading ? <Loader2 className="animate-spin" size={20} /> : null}
-            <span>{loading ? 'Creating...' : 'Create Session'}</span>
+            {loading ? (
+              <span className="inline-block w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+            ) : (
+              <>Create Session <ArrowRight size={18} /></>
+            )}
           </button>
         </form>
       </div>

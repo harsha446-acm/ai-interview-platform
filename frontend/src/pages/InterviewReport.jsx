@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { mockAPI } from '../services/api';
 import toast from 'react-hot-toast';
-import { Download, Loader2, CheckCircle, XCircle, AlertTriangle } from 'lucide-react';
+import { Download, Loader2, CheckCircle, XCircle, AlertTriangle, FileBarChart } from 'lucide-react';
 import {
   RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
@@ -56,7 +56,7 @@ export default function InterviewReport() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-[60vh]">
-        <Loader2 className="animate-spin text-primary-500" size={40} />
+        <span className="inline-block w-10 h-10 border-3 border-primary-200 border-t-primary-600 rounded-full animate-spin" />
       </div>
     );
   }
@@ -94,17 +94,22 @@ export default function InterviewReport() {
   return (
     <div className="max-w-5xl mx-auto px-4 py-8">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Performance Report</h1>
-          <p className="text-gray-500 mt-1">
-            {report.job_role} • {report.total_questions} questions •{' '}
-            {report.technical_questions} technical, {report.hr_questions} HR
-          </p>
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 slide-up">
+        <div className="flex items-start gap-3">
+          <div className="w-12 h-12 rounded-xl gradient-bg flex items-center justify-center shadow-sm flex-shrink-0">
+            <FileBarChart className="text-white" size={22} />
+          </div>
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">Performance Report</h1>
+            <p className="text-gray-500 mt-1">
+              {report.job_role} • {report.total_questions} questions •{' '}
+              {report.technical_questions} technical, {report.hr_questions} HR
+            </p>
+          </div>
         </div>
         <button
           onClick={downloadPDF}
-          className="mt-4 sm:mt-0 gradient-bg text-white px-5 py-2.5 rounded-xl font-medium flex items-center space-x-2 hover:opacity-90"
+          className="mt-4 sm:mt-0 gradient-bg text-white px-6 py-3 rounded-xl font-semibold flex items-center gap-2 hover:opacity-90 shadow-md transition-all"
         >
           <Download size={18} />
           <span>Download PDF</span>
@@ -216,9 +221,9 @@ export default function InterviewReport() {
           { label: 'Communication (15%)', value: scores.communication_score, color: 'green' },
           { label: 'Confidence (10%)', value: scores.confidence_score, color: 'yellow' },
         ].map((s) => (
-          <div key={s.label} className="bg-white rounded-xl p-5 text-center border border-gray-100 shadow-sm">
+          <div key={s.label} className="bg-white/80 backdrop-blur-sm rounded-2xl p-5 text-center border border-gray-100 shadow-sm card-hover">
             <div className={`text-3xl font-bold ${getScoreColor(s.value)}`}>{Math.round(s.value)}%</div>
-            <div className="text-xs text-gray-500 mt-1">{s.label}</div>
+            <div className="text-xs text-gray-500 mt-1 font-medium">{s.label}</div>
           </div>
         ))}
       </div>
@@ -243,8 +248,8 @@ export default function InterviewReport() {
 
       {/* Charts */}
       <div className="grid md:grid-cols-2 gap-6 mb-8">
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-          <h3 className="font-semibold text-gray-900 mb-4">Skill Radar</h3>
+        <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-sm border border-gray-100 p-6">
+          <h3 className="font-bold text-gray-900 mb-4">Skill Radar</h3>
           <ResponsiveContainer width="100%" height={280}>
             <RadarChart data={radarData}>
               <PolarGrid />
@@ -254,8 +259,8 @@ export default function InterviewReport() {
             </RadarChart>
           </ResponsiveContainer>
         </div>
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-          <h3 className="font-semibold text-gray-900 mb-4">Question-wise Scores</h3>
+        <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-sm border border-gray-100 p-6">
+          <h3 className="font-bold text-gray-900 mb-4">Question-wise Scores</h3>
           <ResponsiveContainer width="100%" height={280}>
             <BarChart data={barData}>
               <CartesianGrid strokeDasharray="3 3" />

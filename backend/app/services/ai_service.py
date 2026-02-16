@@ -28,21 +28,36 @@ from app.core.config import settings
 # ── Master system prompt injected into every LLM call ──────
 
 MASTER_SYSTEM_PROMPT = """You are an advanced AI Interview Engine designed to simulate a real-world corporate interview.
+You must conduct the interview exactly like a senior interviewer at a top company (Google, Microsoft, Amazon level).
 
 CORE RULES:
 1. NEVER repeat a question or ask a semantically similar variation of a previously asked question.
 2. The interview is TIME-BASED — keep generating questions until the allocated time expires.
 3. All questions MUST be derived from the Job Description, required skills, tools, and responsibilities.
 4. There are TWO rounds: Technical (Round 1) then HR (Round 2).
-   - Technical: core skills, problem-solving, scenario-based, tool-specific questions.
-   - HR: communication, cultural fit, conflict handling, leadership, career goals, behavioral scenarios.
+   - Technical: core skills, problem-solving, scenario-based, tool-specific, system-design questions.
+   - HR: behavioral (STAR method), cultural fit, conflict resolution, leadership, career goals, situational judgment.
 5. Adapt difficulty based on the candidate's last answer score:
-   - Strong (>80%): increase difficulty, ask deeper follow-up.
-   - Moderate (50-80%): ask clarification / probe practical understanding.
-   - Weak (<50%): simplify, ask supportive fallback, or move to a related easier topic.
-6. Follow-up questions MUST be context-aware and directly based on the candidate's previous answer.
-7. Always generate an ideal reference answer and evaluation keywords for every question.
+   - Strong (>80%): increase difficulty significantly, ask deeper follow-up, probe edge cases.
+   - Moderate (50-80%): ask clarification, probe practical understanding, give a scenario.
+   - Weak (<50%): simplify slightly, ask a supportive fallback, or move to an easier related topic.
+6. Follow-up questions MUST be context-aware and directly reference the candidate's previous answer.
+7. Always generate a comprehensive ideal reference answer (at least 3-4 sentences) and 5-7 evaluation keywords.
 8. Always return valid JSON — no markdown, no extra text.
+
+QUESTION VARIETY (mix these types across the interview):
+- Conceptual: "Explain how X works and why it matters"
+- Scenario-based: "Given situation X, how would you approach..."
+- Problem-solving: "Design a solution for..."
+- Experience-based: "Tell me about a time when..."
+- Trade-off analysis: "Compare X vs Y, when would you choose each?"
+- Debugging: "This code/system has issue X, how would you diagnose it?"
+- System design: "How would you architect a system that..."
+
+IDEAL ANSWER QUALITY:
+- The ideal_answer must be a detailed, expert-level response (not generic)
+- Include specific technologies, patterns, metrics, or frameworks where applicable
+- For HR questions, include STAR method structure in the ideal answer
 """
 
 
@@ -364,18 +379,30 @@ Return ONLY a JSON object in this exact format:
         # 3. Communication score (heuristic — instant)
         word_count = len(candidate_answer.split())
         sentences = [s.strip() for s in candidate_answer.split(".") if s.strip()]
+        # Base score from response length
         if word_count < 10:
-            comm_score = 20
-        elif word_count < 30:
-            comm_score = 50
-        elif word_count < 80:
+            comm_score = 15
+        elif word_count < 20:
+            comm_score = 35
+        elif word_count < 50:
+            comm_score = 55
+        elif word_count < 100:
             comm_score = 70
         elif word_count < 200:
-            comm_score = 85
+            comm_score = 82
         else:
-            comm_score = 90
+            comm_score = 88
+        # Bonus for structured multi-sentence answers
         if len(sentences) >= 3:
-            comm_score = min(100, comm_score + 10)
+            comm_score = min(100, comm_score + 8)
+        if len(sentences) >= 5:
+            comm_score = min(100, comm_score + 5)
+        # Bonus for transition words indicating structured thinking
+        structure_markers = ['firstly', 'secondly', 'however', 'moreover', 'for example',
+                            'in addition', 'furthermore', 'therefore', 'in conclusion',
+                            'on the other hand', 'specifically', 'for instance']
+        marker_count = sum(1 for m in structure_markers if m in candidate_answer.lower())
+        comm_score = min(100, comm_score + marker_count * 3)
 
         # 4. Depth estimate (heuristic based on similarity + length + keywords)
         depth_score = min(100, sim_score * 0.5 + keyword_pct * 0.3 + min(word_count, 100) * 0.2)
@@ -402,13 +429,31 @@ Return ONLY a JSON object in this exact format:
         else:
             answer_strength = "weak"
 
-        # Quick heuristic feedback (no LLM)
-        if overall >= 70:
-            feedback = "Good answer with relevant details. Consider adding more specific examples."
-        elif overall >= 40:
-            feedback = "Decent answer but could be more detailed. Include specific examples and deeper knowledge."
+        # Detailed heuristic feedback (no LLM)
+        feedback_parts = []
+        if sim_score >= 70:
+            feedback_parts.append("Your answer aligns well with the expected response.")
+        elif sim_score >= 40:
+            feedback_parts.append("Your answer partially covers the expected content.")
         else:
-            feedback = "Answer needs improvement. Focus on addressing the question directly with relevant examples."
+            feedback_parts.append("Your answer doesn't closely match what was expected.")
+
+        if keyword_pct >= 70:
+            feedback_parts.append("Good use of relevant technical terminology.")
+        elif missed:
+            feedback_parts.append(f"Consider mentioning: {', '.join(missed[:3])}.")
+
+        if word_count < 30:
+            feedback_parts.append("Try to elaborate more — provide specific examples and details.")
+        elif len(sentences) < 3:
+            feedback_parts.append("Structure your answer into multiple points for clarity.")
+
+        if overall >= 75:
+            feedback_parts.append("Strong response overall!")
+        elif overall < 40:
+            feedback_parts.append("Review the core concepts and practice with concrete examples.")
+
+        feedback = " ".join(feedback_parts)
 
         return {
             "content_score": round(content_score, 1),

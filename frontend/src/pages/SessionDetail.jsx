@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { interviewAPI, candidateAPI } from '../services/api';
 import toast from 'react-hot-toast';
-import { Mail, Users, Copy, Loader2, Eye } from 'lucide-react';
+import { Mail, Users, Copy, Loader2, Eye, Calendar, Clock, Send } from 'lucide-react';
 
 export default function SessionDetail() {
   const { sessionId } = useParams();
@@ -65,7 +65,7 @@ export default function SessionDetail() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-[60vh]">
-        <Loader2 className="animate-spin text-primary-500" size={40} />
+        <span className="inline-block w-10 h-10 border-3 border-primary-200 border-t-primary-600 rounded-full animate-spin" />
       </div>
     );
   }
@@ -77,20 +77,20 @@ export default function SessionDetail() {
   return (
     <div className="max-w-5xl mx-auto px-4 py-8">
       {/* Session info */}
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-8">
+      <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-sm border border-gray-100 p-6 mb-8 slide-up">
         <div className="flex flex-col sm:flex-row justify-between items-start">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">{session.job_role}</h1>
-            {session.company_name && <p className="text-gray-500">{session.company_name}</p>}
+            {session.company_name && <p className="text-gray-500 mt-0.5">{session.company_name}</p>}
             <div className="flex flex-wrap gap-4 mt-3 text-sm text-gray-500">
-              <span>📅 {new Date(session.scheduled_time).toLocaleString()}</span>
-              <span>⏱️ {session.duration_minutes} min</span>
-              <span>👥 {session.candidate_count} candidates</span>
+              <span className="flex items-center gap-1.5"><Calendar size={14} className="text-gray-400" />{new Date(session.scheduled_time).toLocaleString()}</span>
+              <span className="flex items-center gap-1.5"><Clock size={14} className="text-gray-400" />{session.duration_minutes} min</span>
+              <span className="flex items-center gap-1.5"><Users size={14} className="text-gray-400" />{session.candidate_count} candidates</span>
             </div>
           </div>
           <Link
             to={`/hr/live/${sessionId}`}
-            className="mt-4 sm:mt-0 gradient-bg text-white px-5 py-2.5 rounded-xl font-medium flex items-center space-x-2 hover:opacity-90"
+            className="mt-4 sm:mt-0 gradient-bg text-white px-6 py-3 rounded-xl font-semibold flex items-center gap-2 hover:opacity-90 transition-all shadow-md"
           >
             <Eye size={18} />
             <span>Monitor Interviews</span>
@@ -99,9 +99,11 @@ export default function SessionDetail() {
       </div>
 
       {/* Invite section */}
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-8">
-        <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center space-x-2">
-          <Mail size={20} className="text-primary-500" />
+      <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-sm border border-gray-100 p-6 mb-8">
+        <h2 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+          <div className="w-8 h-8 rounded-lg bg-primary-100 flex items-center justify-center">
+            <Mail size={16} className="text-primary-600" />
+          </div>
           <span>Invite Candidates</span>
         </h2>
         <p className="text-sm text-gray-500 mb-3">
@@ -112,53 +114,60 @@ export default function SessionDetail() {
           onChange={(e) => setEmailInput(e.target.value)}
           rows={4}
           placeholder="candidate1@example.com&#10;candidate2@example.com&#10;candidate3@example.com"
-          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 outline-none resize-none font-mono text-sm"
+          className="w-full px-4 py-3 bg-gray-50/80 border border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none resize-none font-mono text-sm transition-all"
         />
         <button
           onClick={handleInvite}
           disabled={inviting || !emailInput.trim()}
-          className="mt-3 gradient-bg text-white px-6 py-2.5 rounded-lg font-medium flex items-center space-x-2 hover:opacity-90 disabled:opacity-50"
+          className="mt-3 gradient-bg text-white px-6 py-2.5 rounded-xl font-semibold flex items-center gap-2 hover:opacity-90 disabled:opacity-50 shadow-sm transition-all"
         >
-          {inviting ? <Loader2 className="animate-spin" size={16} /> : <Mail size={16} />}
+          {inviting ? <span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Send size={16} />}
           <span>{inviting ? 'Sending...' : 'Send Invitations'}</span>
         </button>
       </div>
 
       {/* Candidate list */}
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center space-x-2">
-          <Users size={20} className="text-primary-500" />
+      <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-sm border border-gray-100 p-6">
+        <h2 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+          <div className="w-8 h-8 rounded-lg bg-green-100 flex items-center justify-center">
+            <Users size={16} className="text-green-600" />
+          </div>
           <span>Candidates ({candidates.length})</span>
         </h2>
         {candidates.length === 0 ? (
-          <p className="text-gray-400 text-sm">No candidates invited yet.</p>
+          <div className="text-center py-8">
+            <div className="w-14 h-14 bg-gray-100 rounded-xl flex items-center justify-center mx-auto mb-3">
+              <Users size={24} className="text-gray-300" />
+            </div>
+            <p className="text-gray-400 text-sm">No candidates invited yet.</p>
+          </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Email</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Link</th>
+              <thead>
+                <tr className="bg-gray-50/80">
+                  <th className="px-4 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Email</th>
+                  <th className="px-4 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
+                  <th className="px-4 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Link</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-100">
+              <tbody className="divide-y divide-gray-50">
                 {candidates.map((c) => (
-                  <tr key={c.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 text-sm text-gray-900">{c.email}</td>
-                    <td className="px-4 py-3">
-                      <span className={`text-xs px-2 py-1 rounded-full font-medium ${
+                  <tr key={c.id} className="hover:bg-primary-50/30 transition-colors">
+                    <td className="px-4 py-3.5 text-sm font-medium text-gray-900">{c.email}</td>
+                    <td className="px-4 py-3.5">
+                      <span className={`text-xs px-2.5 py-1 rounded-full font-semibold ${
                         c.status === 'joined' ? 'bg-green-100 text-green-700'
                           : c.status === 'completed' ? 'bg-blue-100 text-blue-700'
-                          : 'bg-yellow-100 text-yellow-700'
+                          : 'bg-amber-100 text-amber-700'
                       }`}>
                         {c.status}
                       </span>
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3.5">
                       <button
                         onClick={() => copyLink(c.unique_token)}
-                        className="text-primary-600 hover:text-primary-800 flex items-center space-x-1 text-sm"
+                        className="text-primary-600 hover:text-primary-700 flex items-center gap-1.5 text-sm font-medium transition"
                       >
                         <Copy size={14} />
                         <span>Copy Link</span>
