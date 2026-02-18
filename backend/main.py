@@ -48,8 +48,8 @@ if settings.FRONTEND_URL:
         "http://localhost:5173",
         "http://localhost:3000",
     ]
-    # Also allow cloud platform subdomains (Render / Railway)
-    for domain in [".onrender.com", ".railway.app", ".up.railway.app"]:
+    # Also allow Railway subdomains
+    for domain in [".railway.app", ".up.railway.app"]:
         if domain not in (settings.FRONTEND_URL or ""):
             origins.append(f"https://*{domain}")
 
