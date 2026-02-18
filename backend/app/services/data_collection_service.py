@@ -124,11 +124,11 @@ class DataCollectionService:
     """Multi-source candidate profiling and feature engineering pipeline."""
 
     def __init__(self):
-        self._embedding_model: Optional[SentenceTransformer] = None
+        self._embedding_model = None
         self._http_client: Optional[httpx.AsyncClient] = None
 
     @property
-    def embedding_model(self) -> Optional[SentenceTransformer]:
+    def embedding_model(self):
         if self._embedding_model is None and ST_AVAILABLE:
             self._embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
         return self._embedding_model

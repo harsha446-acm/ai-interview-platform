@@ -71,7 +71,7 @@ class AIService:
     """High-performance AI interview engine with warm-loaded models and parallel evaluation."""
 
     def __init__(self):
-        self._embedding_model: Optional[SentenceTransformer] = None
+        self._embedding_model = None
         self._gemini_client = None
         self._warmed_up = False
         self._warmup_lock = asyncio.Lock()

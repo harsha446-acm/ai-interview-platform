@@ -104,7 +104,7 @@ class QuestionGenerationService:
     """4-model intelligent question generation with quality filtering."""
 
     def __init__(self):
-        self._embedding_model: Optional[SentenceTransformer] = None
+        self._embedding_model = None
         self._gemini_client = None
         self._question_history: Dict[str, List[str]] = {}
 
