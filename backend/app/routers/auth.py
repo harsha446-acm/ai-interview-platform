@@ -1,11 +1,13 @@
-from fastapi import APIRouter, HTTPException, status
-from app.models.schemas import UserCreate, UserLogin, UserResponse, TokenResponse
+from fastapi import APIRouter, HTTPException, status, Depends
+from app.models.schemas import UserCreate, UserLogin, UserUpdate, UserResponse, TokenResponse
 from app.core.database import get_database
 from app.core.security import (
     get_password_hash,
     verify_password,
     create_access_token,
+    get_current_user,
 )
+from bson import ObjectId
 from datetime import datetime
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
@@ -59,3 +61,62 @@ async def login(credentials: UserLogin):
             created_at=user.get("created_at"),
         ),
     )
+
+
+# ── Get Current User Profile ─────────────────────────
+
+@router.get("/me", response_model=UserResponse)
+async def get_me(user: dict = Depends(get_current_user)):
+    return UserResponse(
+        id=str(user["_id"]),
+        name=user["name"],
+        email=user["email"],
+        role=user["role"],
+        created_at=user.get("created_at"),
+    )
+
+
+# ── Update Profile ───────────────────────────────────
+
+@router.put("/profile", response_model=UserResponse)
+async def update_profile(data: UserUpdate, user: dict = Depends(get_current_user)):
+    db = get_database()
+    updates = {}
+
+    if data.name is not None:
+        updates["name"] = data.name
+    if data.email is not None and data.email != user["email"]:
+        existing = await db.users.find_one({"email": data.email})
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already in use")
+        updates["email"] = data.email
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No changes provided")
+
+    await db.users.update_one({"_id": user["_id"]}, {"$set": updates})
+    updated = await db.users.find_one({"_id": user["_id"]})
+
+    return UserResponse(
+        id=str(updated["_id"]),
+        name=updated["name"],
+        email=updated["email"],
+        role=updated["role"],
+        created_at=updated.get("created_at"),
+    )
+
+
+# ── Delete Account ───────────────────────────────────
+
+@router.delete("/account", status_code=200)
+async def delete_account(user: dict = Depends(get_current_user)):
+    db = get_database()
+    user_id = str(user["_id"])
+
+    # Delete user's mock interview sessions
+    await db.mock_sessions.delete_many({"user_id": user_id})
+
+    # Delete the user
+    await db.users.delete_one({"_id": user["_id"]})
+
+    return {"detail": "Account deleted successfully"}

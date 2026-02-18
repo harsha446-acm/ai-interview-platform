@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { candidateAPI, interviewAPI } from '../services/api';
+import { candidateAPI, interviewAPI, WS_BASE } from '../services/api';
 import toast from 'react-hot-toast';
 import {
   Loader2, Users, Eye, ArrowLeft, RefreshCw, BarChart3,
@@ -61,9 +61,15 @@ export default function LiveInterview() {
   useEffect(() => {
     if (!sessionId) return;
 
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const hrName = 'HR Manager';
-    const wsUrl = `${wsProtocol}//${window.location.host}/ws/interview/${sessionId}?role=hr&name=${encodeURIComponent(hrName)}&token=hr_${sessionId}`;
+    // In production (Render), WS_BASE points to the backend; in dev, use same host
+    let wsUrl;
+    if (WS_BASE) {
+      wsUrl = `${WS_BASE}/ws/interview/${sessionId}?role=hr&name=${encodeURIComponent(hrName)}&token=hr_${sessionId}`;
+    } else {
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      wsUrl = `${wsProtocol}//${window.location.host}/ws/interview/${sessionId}?role=hr&name=${encodeURIComponent(hrName)}&token=hr_${sessionId}`;
+    }
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 

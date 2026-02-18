@@ -5,7 +5,7 @@
 #   1. Push this repo to GitHub
 #   2. Go to https://dashboard.render.com → New → Blueprint
 #   3. Connect your repo → Render reads this file and creates all services
-#   4. Set environment variables (MongoDB Atlas URI, JWT secret, SMTP creds, Ollama URL)
+#   4. Set environment variables (MongoDB Atlas URI, JWT secret, SMTP creds, Gemini API key)
 
 services:
   # ── Backend (FastAPI) ─────────────────────────────
@@ -27,10 +27,18 @@ services:
         value: HS256
       - key: ACCESS_TOKEN_EXPIRE_MINUTES
         value: "1440"
-      - key: OLLAMA_BASE_URL
-        sync: false            # enter your Ollama host URL (e.g. https://your-ollama.example.com)
+      - key: GEMINI_API_KEY
+        sync: false            # enter your Google Gemini API key
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
       - key: FRONTEND_URL
         sync: false            # set after frontend deploys (e.g. https://ai-interview-frontend.onrender.com)
+      - key: PUBLIC_URL
+        sync: false            # same as FRONTEND_URL for Render
+      - key: EMAIL_PROVIDER
+        value: resend
+      - key: RESEND_API_KEY
+        sync: false            # enter your Resend API key
       - key: SMTP_HOST
         value: smtp.gmail.com
       - key: SMTP_PORT
@@ -60,3 +68,5 @@ services:
     envVars:
       - key: VITE_API_URL
         sync: false                  # set to https://ai-interview-backend.onrender.com/api
+      - key: VITE_WS_URL
+        sync: false                  # set to wss://ai-interview-backend.onrender.com

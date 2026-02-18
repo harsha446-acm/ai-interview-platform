@@ -3,7 +3,7 @@ AI Interview Engine — Optimized Performance Architecture
 ─────────────────────────────────────────────────────────
 Optimizations:
   • Model warm-loading at startup (not per-request)
-  • Persistent Ollama httpx client (connection pooling)
+  • Google Gemini API (gemini-2.5-flash) for fast LLM inference
   • Two-phase evaluation: instant score (<2s) + background deep analysis
   • Parallel evaluation with asyncio.gather()
   • Reduced LLM calls: local scoring for similarity/keywords/communication
@@ -17,11 +17,12 @@ import re
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
-import httpx
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
+import google.genai as genai
+from google.genai import types as genai_types
 from app.core.config import settings
 
 
@@ -66,7 +67,7 @@ class AIService:
 
     def __init__(self):
         self._embedding_model: Optional[SentenceTransformer] = None
-        self._http_client: Optional[httpx.AsyncClient] = None
+        self._gemini_client = None
         self._warmed_up = False
         self._warmup_lock = asyncio.Lock()
         # Cache for pre-generated questions
@@ -75,40 +76,30 @@ class AIService:
     # ── Warm-up: Load models once at startup ──────────
 
     async def warm_up(self):
-        """Lightweight startup — models load lazily on first use to save RAM."""
+        """Lightweight startup — initialize Gemini client."""
         if self._warmed_up:
             return
         async with self._warmup_lock:
             if self._warmed_up:
                 return
-            print("🔄 Initializing AI service (lazy mode)...")
+            print("🔄 Initializing AI service...")
 
             # 1. Skip embedding model at startup — loads on first use
             # This saves ~400MB RAM, critical for Render free tier (512MB)
 
-            # 2. Create persistent HTTP client for Ollama
-            self._http_client = httpx.AsyncClient(
-                timeout=httpx.Timeout(120.0, connect=10.0),
-                limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
-            )
-
-            # 3. Ping Ollama (non-blocking, don't load model yet)
-            try:
-                resp = await self._http_client.get(f"{settings.OLLAMA_BASE_URL}/api/tags")
-                if resp.status_code == 200:
-                    print("  ✅ Ollama is reachable")
-                else:
-                    print(f"  ⚠️ Ollama responded with status {resp.status_code}")
-            except Exception as e:
-                print(f"  ⚠️ Ollama not reachable (will retry on first call): {e}")
+            # 2. Configure Google Gemini
+            if settings.GEMINI_API_KEY:
+                self._gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+                print(f"  ✅ Gemini configured (model: {settings.GEMINI_MODEL})")
+            else:
+                print("  ⚠️ GEMINI_API_KEY not set — LLM calls will return empty results")
 
             self._warmed_up = True
             print("✅ AI Engine ready — models will load on first use")
 
     async def shutdown(self):
         """Cleanup on app shutdown."""
-        if self._http_client:
-            await self._http_client.aclose()
+        pass  # Gemini SDK doesn't require explicit cleanup
 
     @property
     def embedding_model(self) -> SentenceTransformer:
@@ -116,36 +107,34 @@ class AIService:
             self._embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
         return self._embedding_model
 
-    @property
-    def http_client(self) -> httpx.AsyncClient:
-        if self._http_client is None or self._http_client.is_closed:
-            self._http_client = httpx.AsyncClient(
-                timeout=httpx.Timeout(120.0, connect=10.0),
-                limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
-            )
-        return self._http_client
+    # ── Gemini helpers ────────────────────────────────
 
-    # ── Ollama helpers (persistent client) ────────────
+    async def _gemini_generate(self, prompt: str, system: str = "", fast: bool = False) -> str:
+        """Call Google Gemini API. fast=True uses lower token limit."""
+        if not self._gemini_client:
+            if settings.GEMINI_API_KEY:
+                self._gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+            else:
+                print("Gemini error: GEMINI_API_KEY not configured")
+                return ""
 
-    async def _ollama_generate(self, prompt: str, system: str = "", fast: bool = False) -> str:
-        """Call Ollama with persistent connection pool. fast=True uses lower token limit."""
         full_system = MASTER_SYSTEM_PROMPT + "\n\n" + system
         max_tokens = 512 if fast else 2048
-        payload = {
-            "model": "llama3",
-            "prompt": prompt,
-            "system": full_system,
-            "stream": False,
-            "options": {"temperature": 0.7, "num_predict": max_tokens},
-        }
+
         try:
-            resp = await self.http_client.post(
-                f"{settings.OLLAMA_BASE_URL}/api/generate", json=payload
+            response = await asyncio.to_thread(
+                self._gemini_client.models.generate_content,
+                model=settings.GEMINI_MODEL,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=full_system,
+                    temperature=0.7,
+                    max_output_tokens=max_tokens,
+                ),
             )
-            resp.raise_for_status()
-            return resp.json().get("response", "")
+            return response.text if response.text else ""
         except Exception as e:
-            print(f"Ollama error: {e}")
+            print(f"Gemini error: {e}")
             return ""
 
     def _parse_json_from_response(self, text: str) -> dict:
@@ -179,7 +168,7 @@ Return ONLY a JSON object:
   "hr_topics": ["topic1", "topic2"]
 }}"""
 
-        response = await self._ollama_generate(prompt, "You are a JD analysis expert. Return valid JSON only.")
+        response = await self._gemini_generate(prompt, "You are a JD analysis expert. Return valid JSON only.")
         parsed = self._parse_json_from_response(response)
         if not parsed:
             parsed = {
@@ -210,7 +199,7 @@ Return ONLY a JSON object:
     ) -> Dict[str, Any]:
         """Generate a single adaptive interview question."""
 
-        prev_q_text = "\n".join(f"- {q}" for q in previous_questions) if previous_questions else "None"
+        prev_q_text = "\n".join(f"- {q}" for q in previous_questions[-30:]) if previous_questions else "None"
         prev_a_text = ""
         if previous_answers and len(previous_answers) > 0:
             last_answer = previous_answers[-1] if previous_answers else ""
@@ -246,18 +235,33 @@ Include in the question: the problem statement, expected input/output, and any c
 The ideal_answer should contain a working code solution.
 Set "is_coding": true in the response."""
 
+        # Add randomization seed for variety across sessions
+        import random
+        variety_seed = random.randint(1, 10000)
+        topic_angles = [
+            "a practical scenario", "a conceptual deep-dive", "a real-world problem",
+            "a comparison or trade-off analysis", "a design challenge",
+            "an optimization problem", "a debugging scenario", "a best-practices discussion",
+            "an architecture decision", "a recent technology trend",
+        ]
+        chosen_angle = random.choice(topic_angles)
+
         prompt = f"""Generate a {round_type} interview question for a {job_role} position.
 Experience Level: {experience_level or 'Not specified'}
 Difficulty: {difficulty}
 Round: {round_type}
 {jd_context}
 
-Previously asked questions (DO NOT repeat or ask similar):
+Previously asked questions (DO NOT repeat these or ask semantically similar questions — pick a DIFFERENT topic/angle each time):
 {prev_q_text}
 {prev_a_text}
 
 {followup_instruction}
 {coding_instruction}
+
+IMPORTANT: Create a UNIQUE question that is DIFFERENT from all previously asked questions above.
+Approach this from the angle of: {chosen_angle}.
+Variety seed: {variety_seed} — use this to add creative variation.
 
 Return ONLY a JSON object in this exact format:
 {{
@@ -276,7 +280,7 @@ Return ONLY a JSON object in this exact format:
 
         system = f"You are an expert {round_type} interviewer. Generate relevant, professional questions strictly aligned with the job description. Always return valid JSON."
 
-        response = await self._ollama_generate(prompt, system)
+        response = await self._gemini_generate(prompt, system)
         parsed = self._parse_json_from_response(response)
 
         if not parsed or "question" not in parsed:
@@ -568,7 +572,7 @@ Consider:
 Return ONLY a JSON object: {{"depth_score": <number>}}"""
 
         try:
-            response = await self._ollama_generate(prompt, "You are an expert evaluator. Return only valid JSON.", fast=True)
+            response = await self._gemini_generate(prompt, "You are an expert evaluator. Return only valid JSON.", fast=True)
             parsed = self._parse_json_from_response(response)
             score = parsed.get("depth_score", sim_score * 0.8)
             return max(0, min(100, float(score)))
@@ -587,7 +591,7 @@ Provide constructive feedback: what was good, what could be improved, and one sp
 
         system = "You are an expert interviewer providing brief, constructive, actionable feedback."
         try:
-            result = await self._ollama_generate(prompt, system, fast=True)
+            result = await self._gemini_generate(prompt, system, fast=True)
             if result.strip():
                 return result.strip()
         except Exception:
@@ -638,7 +642,7 @@ Return ONLY a JSON object:
   "follow_up_questions": ["q1", "q2"]
 }}"""
 
-        response = await self._ollama_generate(prompt, "You are an expert code reviewer. Return valid JSON only.")
+        response = await self._gemini_generate(prompt, "You are an expert code reviewer. Return valid JSON only.")
         parsed = self._parse_json_from_response(response)
 
         if not parsed or "overall_score" not in parsed:

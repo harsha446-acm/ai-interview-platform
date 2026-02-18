@@ -51,6 +51,11 @@ class UserLogin(BaseModel):
     password: str
 
 
+class UserUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=2, max_length=100)
+    email: Optional[EmailStr] = None
+
+
 class UserResponse(BaseModel):
     id: str
     name: str
@@ -114,6 +119,8 @@ class MockInterviewStart(BaseModel):
     job_description: Optional[str] = None
     experience_level: Optional[str] = None
     duration_minutes: int = Field(default=20, ge=5, le=120)
+    github_url: Optional[str] = None
+    linkedin_url: Optional[str] = None
 
 
 class QuestionResponse(BaseModel):

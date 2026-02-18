@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { Brain, Video, BarChart3, Mail, Shield, Zap, ArrowRight, Sparkles, Users, CheckCircle } from 'lucide-react';
 
 const features = [
-  { icon: Brain, title: 'AI-Powered Questions', desc: 'Dynamic question generation using LLaMA 3 with adaptive difficulty that adjusts to your skill level.', color: 'from-violet-500 to-purple-600' },
+  { icon: Brain, title: 'AI-Powered Questions', desc: 'Dynamic question generation using Gemini 2.5 Flash with adaptive difficulty that adjusts to your skill level.', color: 'from-violet-500 to-purple-600' },
   { icon: Video, title: 'Live Video Interviews', desc: 'WebRTC-powered real-time video sessions with camera analysis for confidence detection.', color: 'from-blue-500 to-cyan-500' },
   { icon: BarChart3, title: 'Smart Evaluation', desc: 'NLP semantic analysis, keyword matching, and multi-dimensional scoring with detailed feedback.', color: 'from-emerald-500 to-teal-500' },
   { icon: Mail, title: 'Bulk Invitations', desc: 'Generate unique interview links and send automated email invites to candidates at scale.', color: 'from-orange-500 to-amber-500' },
@@ -14,7 +14,7 @@ const features = [
 
 const stats = [
   { value: '100%', label: 'Free & Open Source' },
-  { value: 'AI', label: 'Powered by LLaMA 3' },
+  { value: 'AI', label: 'Powered by Gemini' },
   { value: '2', label: 'Interview Rounds' },
   { value: 'PDF', label: 'Detailed Reports' },
 ];
@@ -217,7 +217,7 @@ export default function Landing() {
               </div>
               <span className="font-bold text-white">InterviewAI</span>
             </div>
-            <p className="text-sm text-center">Built with React, FastAPI, LLaMA 3 & WebRTC — 100% Open Source</p>
+            <p className="text-sm text-center">Built with React, FastAPI, Gemini & WebRTC — 100% Open Source</p>
             <div className="flex items-center gap-1 text-xs">
               <CheckCircle size={14} className="text-green-500" />
               <span>Free forever</span>

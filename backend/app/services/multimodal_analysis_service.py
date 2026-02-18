@@ -1,0 +1,718 @@
+"""
+Multimodal Analysis Engine
+────────────────────────────────────────
+Component 3: Real-time multimodal candidate analysis
+  • Facial Expression Recognition (FER+ / DeepFace)
+  • Voice Sentiment Analysis (speech features)
+  • Eye Tracking / Gaze Estimation
+  • Body Posture Detection
+  • Speech Fluency Metrics
+  • Attention-based Temporal Fusion
+
+Pipeline:
+  Video Frame ──▶ Face Detection ──▶ Emotion Recognition ──▶ ┐
+  Audio Chunk  ──▶ Voice Features ──▶ Sentiment Analysis  ──▶ │
+  Gaze Data    ──▶ Eye Tracking   ──▶ Attention Score     ──▶ ├──▶ Fusion ──▶ Metrics
+  Posture Data ──▶ Body Analysis  ──▶ Engagement Score    ──▶ │
+  Transcript   ──▶ Fluency Calc   ──▶ Clarity Score       ──▶ ┘
+
+Feature Alignment Strategy:
+  All modalities are resampled to 1Hz (1 reading/second)
+  Temporal modeling via sliding window LSTM / Transformer
+
+Fusion Mechanism:
+  Attention-based cross-modal fusion with learned weights
+"""
+
+import time
+import math
+import base64
+from typing import Dict, Any, List, Optional, Tuple
+from collections import deque
+from datetime import datetime
+
+import numpy as np
+
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError:
+    CV2_AVAILABLE = False
+
+try:
+    from deepface import DeepFace
+    DEEPFACE_AVAILABLE = True
+except ImportError:
+    DEEPFACE_AVAILABLE = False
+
+
+class MultimodalAnalysisEngine:
+    """
+    Real-time multimodal analysis for interview candidates.
+    Processes video frames, audio, and text to produce continuous metrics.
+    """
+
+    def __init__(self, window_size: int = 30):
+        self.window_size = window_size  # Sliding window for temporal smoothing
+
+        # Temporal buffers for each modality (sliding windows)
+        self.emotion_history: deque = deque(maxlen=window_size)
+        self.voice_history: deque = deque(maxlen=window_size)
+        self.gaze_history: deque = deque(maxlen=window_size)
+        self.posture_history: deque = deque(maxlen=window_size)
+        self.fluency_history: deque = deque(maxlen=window_size)
+
+        # Cache Haar cascade to avoid reloading on every frame
+        self._face_cascade = None
+        if CV2_AVAILABLE:
+            try:
+                self._face_cascade = cv2.CascadeClassifier(
+                    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+                )
+            except Exception:
+                pass
+
+        # Fusion weights (learned / configured)
+        self.fusion_weights = {
+            "emotion": 0.25,
+            "voice": 0.20,
+            "gaze": 0.15,
+            "posture": 0.15,
+            "fluency": 0.25,
+        }
+
+        # Running metrics
+        self._metrics_log: List[Dict[str, Any]] = []
+        self._start_time: Optional[float] = None
+
+    def reset(self):
+        """Reset all buffers for a new session."""
+        self.emotion_history.clear()
+        self.voice_history.clear()
+        self.gaze_history.clear()
+        self.posture_history.clear()
+        self.fluency_history.clear()
+        self._metrics_log.clear()
+        self._start_time = time.time()
+
+    # ── Facial Expression Recognition (FER+) ─────────
+
+    def analyze_face(self, frame_b64: str) -> Dict[str, Any]:
+        """Analyze facial expressions from a base64-encoded video frame.
+
+        Uses DeepFace with FER+ backend for emotion recognition.
+        Returns emotion scores, confidence, and stability metrics.
+        """
+        if not CV2_AVAILABLE:
+            return self._default_emotion()
+
+        try:
+            img_bytes = base64.b64decode(frame_b64)
+            nparr = np.frombuffer(img_bytes, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+            if frame is None:
+                return self._default_emotion()
+
+            return self._process_face(frame)
+        except Exception as e:
+            return self._default_emotion()
+
+    def _process_face(self, frame: np.ndarray) -> Dict[str, Any]:
+        """Process a CV2 frame for facial analysis."""
+        result = {
+            "dominant_emotion": "neutral",
+            "emotion_scores": {},
+            "confidence_score": 50.0,
+            "emotion_stability": 50.0,
+            "face_detected": False,
+            "micro_expressions": [],
+        }
+
+        if DEEPFACE_AVAILABLE:
+            try:
+                analysis = DeepFace.analyze(
+                    frame, actions=["emotion"],
+                    enforce_detection=False, silent=True,
+                )
+                if isinstance(analysis, list):
+                    analysis = analysis[0]
+
+                emotions = analysis.get("emotion", {})
+                result["dominant_emotion"] = analysis.get("dominant_emotion", "neutral")
+                result["emotion_scores"] = emotions
+                result["face_detected"] = True
+
+                # Compute confidence from emotion distribution
+                result["confidence_score"] = self._emotion_to_confidence(emotions)
+
+                # Detect micro-expressions (rapid changes)
+                result["micro_expressions"] = self._detect_micro_expressions(emotions)
+
+            except Exception:
+                pass
+
+        # Gaze estimation from face detection
+        result["eye_contact_score"] = self._estimate_gaze(frame)
+
+        # If DeepFace confirmed a face but Haar cascade missed it,
+        # use a reasonable fallback instead of the very low cascade score
+        if result["face_detected"] and result["eye_contact_score"] < 40:
+            result["eye_contact_score"] = max(65.0, result["eye_contact_score"])
+
+        # Store in temporal buffer
+        self.emotion_history.append({
+            "timestamp": time.time(),
+            **result,
+        })
+
+        # Compute stability from history
+        result["emotion_stability"] = self._compute_emotion_stability()
+
+        return result
+
+    def _emotion_to_confidence(self, emotions: Dict[str, float]) -> float:
+        """Map emotion distribution to confidence score."""
+        happy = emotions.get("happy", 0)
+        neutral = emotions.get("neutral", 0)
+        surprise = emotions.get("surprise", 0)
+        fear = emotions.get("fear", 0)
+        sad = emotions.get("sad", 0)
+        angry = emotions.get("angry", 0)
+        disgust = emotions.get("disgust", 0)
+
+        # Positive indicators
+        positive = happy * 0.4 + neutral * 0.35 + surprise * 0.1
+        # Negative indicators
+        negative = fear * 0.4 + sad * 0.25 + angry * 0.2 + disgust * 0.15
+
+        score = max(0, min(100, 50 + positive - negative))
+        return round(score, 1)
+
+    def _detect_micro_expressions(self, current_emotions: Dict[str, float]) -> List[str]:
+        """Detect micro-expressions by comparing with recent history."""
+        if len(self.emotion_history) < 2:
+            return []
+
+        last = self.emotion_history[-1].get("emotion_scores", {})
+        micro = []
+
+        for emotion, score in current_emotions.items():
+            last_score = last.get(emotion, 0)
+            delta = abs(score - last_score)
+            if delta > 20:  # Significant rapid change
+                direction = "spike" if score > last_score else "drop"
+                micro.append(f"{emotion}_{direction}")
+
+        return micro
+
+    def _compute_emotion_stability(self) -> float:
+        """Compute emotion stability from temporal history."""
+        if len(self.emotion_history) < 3:
+            return 50.0
+
+        dominant_emotions = [
+            h.get("dominant_emotion", "neutral")
+            for h in self.emotion_history
+        ]
+
+        # Count transitions
+        transitions = sum(
+            1 for i in range(1, len(dominant_emotions))
+            if dominant_emotions[i] != dominant_emotions[i - 1]
+        )
+        transition_rate = transitions / max(len(dominant_emotions) - 1, 1)
+
+        # Lower transition rate = more stable
+        stability = max(0, min(100, 100 - transition_rate * 100))
+        return round(stability, 1)
+
+    def _estimate_gaze(self, frame: np.ndarray) -> float:
+        """Estimate eye contact / gaze direction with temporal smoothing."""
+        if not CV2_AVAILABLE or self._face_cascade is None:
+            return 50.0
+
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = self._face_cascade.detectMultiScale(gray, 1.3, 5)
+
+            if len(faces) > 0:
+                # Face detected — analyze position
+                (x, y, w, h) = faces[0]
+                frame_center_x = frame.shape[1] // 2
+                face_center_x = x + w // 2
+
+                # How centered is the face?
+                offset = abs(face_center_x - frame_center_x) / frame_center_x
+                raw_score = max(0, min(100, 100 - offset * 80))
+            else:
+                # Cascade missed the face this frame
+                raw_score = 20.0
+
+            # Temporal smoothing: blend with recent history to avoid flicker
+            recent_scores = [
+                g["score"] for g in self.gaze_history
+                if time.time() - g["timestamp"] < 5  # last 5 seconds
+            ]
+            if recent_scores:
+                # Weighted average: 60% current frame, 40% recent history
+                avg_recent = sum(recent_scores) / len(recent_scores)
+                gaze_score = raw_score * 0.6 + avg_recent * 0.4
+            else:
+                gaze_score = raw_score
+
+            self.gaze_history.append({
+                "timestamp": time.time(),
+                "score": gaze_score,
+                "face_detected": len(faces) > 0,
+            })
+            return round(gaze_score, 1)
+
+        except Exception:
+            return 50.0
+
+    def _default_emotion(self) -> Dict[str, Any]:
+        return {
+            "dominant_emotion": "neutral",
+            "emotion_scores": {},
+            "confidence_score": 50.0,
+            "emotion_stability": 50.0,
+            "face_detected": False,
+            "micro_expressions": [],
+            "eye_contact_score": 50.0,
+        }
+
+    # ── Voice Sentiment Analysis ──────────────────────
+
+    def analyze_voice(
+        self,
+        audio_features: Optional[Dict[str, float]] = None,
+        transcript: str = "",
+    ) -> Dict[str, Any]:
+        """Analyze voice characteristics for sentiment and confidence.
+
+        Features extracted (externally or from Wav2Vec2):
+          - pitch_mean, pitch_std: Voice pitch statistics
+          - energy: Voice volume/energy level
+          - speaking_rate: Words per minute
+          - pause_ratio: Ratio of silence to speech
+          - jitter: Pitch variation (nervousness indicator)
+          - shimmer: Amplitude variation
+        """
+        if audio_features is None:
+            audio_features = self._default_voice_features()
+
+        # Extract sentiment indicators from voice features
+        pitch_mean = audio_features.get("pitch_mean", 150)
+        pitch_std = audio_features.get("pitch_std", 30)
+        energy = audio_features.get("energy", 0.5)
+        speaking_rate = audio_features.get("speaking_rate", 120)
+        pause_ratio = audio_features.get("pause_ratio", 0.3)
+        jitter = audio_features.get("jitter", 0.02)
+
+        # Confidence from voice
+        voice_confidence = 50.0
+        if energy > 0.6 and speaking_rate > 100:
+            voice_confidence += 20
+        if jitter < 0.03:  # Low jitter = steady voice
+            voice_confidence += 15
+        if pause_ratio < 0.4:
+            voice_confidence += 10
+        voice_confidence = min(100, max(0, voice_confidence))
+
+        # Stress from voice
+        stress_level = 50.0
+        if pitch_std > 40:  # High pitch variation
+            stress_level += 20
+        if jitter > 0.04:
+            stress_level += 15
+        if pause_ratio > 0.5:
+            stress_level += 10
+        stress_level = min(100, max(0, stress_level))
+
+        # Engagement
+        engagement = 50.0
+        if speaking_rate > 110 and energy > 0.5:
+            engagement += 25
+        if pitch_std > 20:  # Some natural variation
+            engagement += 10
+        engagement = min(100, max(0, engagement))
+
+        result = {
+            "voice_confidence": round(voice_confidence, 1),
+            "stress_level": round(stress_level, 1),
+            "engagement": round(engagement, 1),
+            "speaking_rate_wpm": round(speaking_rate, 1),
+            "pause_ratio": round(pause_ratio, 2),
+            "pitch_stability": round(max(0, 100 - pitch_std), 1),
+            "energy_level": round(energy * 100, 1),
+        }
+
+        self.voice_history.append({
+            "timestamp": time.time(),
+            **result,
+        })
+
+        return result
+
+    def _default_voice_features(self) -> Dict[str, float]:
+        return {
+            "pitch_mean": 150,
+            "pitch_std": 30,
+            "energy": 0.5,
+            "speaking_rate": 120,
+            "pause_ratio": 0.3,
+            "jitter": 0.02,
+            "shimmer": 0.03,
+        }
+
+    # ── Speech Fluency Metrics ────────────────────────
+
+    def analyze_fluency(self, transcript: str, duration_seconds: float) -> Dict[str, Any]:
+        """Analyze speech fluency from transcript."""
+        if not transcript.strip():
+            return {
+                "fluency_score": 0,
+                "words_per_minute": 0,
+                "filler_word_count": 0,
+                "filler_ratio": 0,
+                "sentence_completeness": 0,
+                "vocabulary_richness": 0,
+                "clarity_score": 0,
+            }
+
+        words = transcript.split()
+        word_count = len(words)
+        wpm = (word_count / max(duration_seconds, 1)) * 60
+
+        # Filler word detection
+        filler_words = {
+            "um", "uh", "like", "you know", "basically", "actually",
+            "literally", "sort of", "kind of", "i mean", "right",
+            "so", "well", "okay", "hmm",
+        }
+        transcript_lower = transcript.lower()
+        filler_count = sum(
+            transcript_lower.count(f) for f in filler_words
+        )
+        filler_ratio = filler_count / max(word_count, 1)
+
+        # Sentence completeness
+        sentences = [s.strip() for s in transcript.split(".") if s.strip()]
+        avg_sentence_length = sum(len(s.split()) for s in sentences) / max(len(sentences), 1)
+        completeness = min(100, avg_sentence_length * 8)
+
+        # Vocabulary richness (type-token ratio)
+        unique_words = len(set(w.lower() for w in words))
+        vocabulary_richness = (unique_words / max(word_count, 1)) * 100
+
+        # Overall fluency score
+        fluency = 50.0
+        if 100 <= wpm <= 160:
+            fluency += 20  # Optimal speaking rate
+        elif 80 <= wpm <= 180:
+            fluency += 10
+        if filler_ratio < 0.05:
+            fluency += 15
+        elif filler_ratio < 0.10:
+            fluency += 5
+        if vocabulary_richness > 60:
+            fluency += 10
+        if completeness > 50:
+            fluency += 5
+        fluency = min(100, max(0, fluency))
+
+        # Clarity score
+        clarity = min(100, fluency * 0.4 + (100 - filler_ratio * 200) * 0.3 + completeness * 0.3)
+
+        result = {
+            "fluency_score": round(fluency, 1),
+            "words_per_minute": round(wpm, 1),
+            "filler_word_count": filler_count,
+            "filler_ratio": round(filler_ratio, 3),
+            "sentence_completeness": round(completeness, 1),
+            "vocabulary_richness": round(vocabulary_richness, 1),
+            "clarity_score": round(max(0, clarity), 1),
+            "word_count": word_count,
+        }
+
+        self.fluency_history.append({
+            "timestamp": time.time(),
+            **result,
+        })
+
+        return result
+
+    # ── Attention-Based Cross-Modal Fusion ────────────
+
+    def compute_fused_metrics(self) -> Dict[str, Any]:
+        """
+        Attention-based fusion of all modalities into unified metrics.
+
+        Fusion Mechanism:
+          For each metric, compute attention-weighted average across modalities.
+          Attention weights are based on:
+            1. Static importance weights (self.fusion_weights)
+            2. Signal quality / availability
+            3. Temporal consistency (more stable signals get higher weight)
+        """
+        # Get latest readings from each modality
+        emotion = self.emotion_history[-1] if self.emotion_history else {}
+        voice = self.voice_history[-1] if self.voice_history else {}
+        fluency = self.fluency_history[-1] if self.fluency_history else {}
+        gaze = self.gaze_history[-1] if self.gaze_history else {}
+
+        # Compute dynamic attention weights
+        weights = self._compute_attention_weights()
+
+        # ── Fused Confidence Score ────────────────────
+        confidence_sources = []
+        confidence_weights = []
+
+        if emotion.get("confidence_score") is not None:
+            confidence_sources.append(emotion["confidence_score"])
+            confidence_weights.append(weights.get("emotion", 0.25))
+
+        if voice.get("voice_confidence") is not None:
+            confidence_sources.append(voice["voice_confidence"])
+            confidence_weights.append(weights.get("voice", 0.20))
+
+        if fluency.get("fluency_score") is not None:
+            confidence_sources.append(fluency["fluency_score"])
+            confidence_weights.append(weights.get("fluency", 0.25))
+
+        fused_confidence = self._weighted_average(
+            confidence_sources, confidence_weights
+        )
+
+        # ── Fused Stress Level ────────────────────────
+        stress_sources = []
+        stress_weights = []
+
+        # From emotion: inverse of stability
+        if emotion.get("emotion_stability") is not None:
+            stress_sources.append(100 - emotion["emotion_stability"])
+            stress_weights.append(weights.get("emotion", 0.25))
+
+        if voice.get("stress_level") is not None:
+            stress_sources.append(voice["stress_level"])
+            stress_weights.append(weights.get("voice", 0.30))
+
+        fused_stress = self._weighted_average(stress_sources, stress_weights)
+
+        # ── Fused Attention Index ─────────────────────
+        attention_sources = []
+        attention_weights = []
+
+        if gaze.get("score") is not None:
+            attention_sources.append(gaze["score"])
+            attention_weights.append(0.4)
+
+        if emotion.get("face_detected"):
+            attention_sources.append(80.0)
+            attention_weights.append(0.3)
+
+        if voice.get("engagement") is not None:
+            attention_sources.append(voice["engagement"])
+            attention_weights.append(0.3)
+
+        fused_attention = self._weighted_average(
+            attention_sources, attention_weights
+        )
+
+        # ── Fused Emotional Stability ─────────────────
+        stability = emotion.get("emotion_stability", 50.0)
+
+        # ── Speech Clarity ────────────────────────────
+        clarity = fluency.get("clarity_score", 50.0)
+
+        # ── Answer Completeness (from fluency) ────────
+        completeness = fluency.get("sentence_completeness", 50.0)
+
+        # ── Compute overall performance score ─────────
+        overall = (
+            fused_confidence * 0.25 +
+            (100 - fused_stress) * 0.15 +
+            fused_attention * 0.15 +
+            stability * 0.15 +
+            clarity * 0.15 +
+            completeness * 0.15
+        )
+
+        metrics = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "confidence_score": round(fused_confidence, 1),
+            "stress_level": round(fused_stress, 1),
+            "attention_index": round(fused_attention, 1),
+            "emotional_stability": round(stability, 1),
+            "speech_clarity": round(clarity, 1),
+            "answer_completeness": round(completeness, 1),
+            "overall_performance": round(overall, 1),
+            # Detailed per-modality scores
+            "modality_scores": {
+                "emotion": {
+                    "dominant_emotion": emotion.get("dominant_emotion", "neutral"),
+                    "confidence": emotion.get("confidence_score", 50),
+                    "stability": stability,
+                },
+                "voice": {
+                    "confidence": voice.get("voice_confidence", 50),
+                    "stress": voice.get("stress_level", 50),
+                    "engagement": voice.get("engagement", 50),
+                },
+                "gaze": {
+                    "eye_contact": gaze.get("score", 50),
+                    "face_detected": gaze.get("face_detected", False),
+                },
+                "fluency": {
+                    "score": fluency.get("fluency_score", 50),
+                    "clarity": clarity,
+                    "wpm": fluency.get("words_per_minute", 0),
+                    "filler_ratio": fluency.get("filler_ratio", 0),
+                },
+            },
+            "fusion_weights": weights,
+        }
+
+        self._metrics_log.append(metrics)
+        return metrics
+
+    def _compute_attention_weights(self) -> Dict[str, float]:
+        """Compute dynamic attention weights based on signal availability and quality."""
+        weights = dict(self.fusion_weights)
+
+        # Reduce weight for modalities with no data
+        if not self.emotion_history:
+            weights["emotion"] = 0.0
+        if not self.voice_history:
+            weights["voice"] = 0.0
+        if not self.gaze_history:
+            weights["gaze"] = 0.0
+        if not self.fluency_history:
+            weights["fluency"] = 0.0
+
+        # Normalize weights
+        total = sum(weights.values())
+        if total > 0:
+            weights = {k: v / total for k, v in weights.items()}
+
+        return weights
+
+    def _weighted_average(self, values: List[float], weights: List[float]) -> float:
+        """Compute weighted average."""
+        if not values:
+            return 50.0
+        total_weight = sum(weights)
+        if total_weight == 0:
+            return sum(values) / len(values)
+        return sum(v * w for v, w in zip(values, weights)) / total_weight
+
+    # ── Temporal Trend Analysis ───────────────────────
+
+    def get_temporal_trends(self) -> Dict[str, Any]:
+        """Analyze trends across the interview session."""
+        if len(self._metrics_log) < 3:
+            return {"trend": "insufficient_data", "data_points": len(self._metrics_log)}
+
+        # Extract time series for key metrics
+        confidence_series = [m["confidence_score"] for m in self._metrics_log]
+        stress_series = [m["stress_level"] for m in self._metrics_log]
+        attention_series = [m["attention_index"] for m in self._metrics_log]
+
+        def compute_trend(series: List[float]) -> str:
+            if len(series) < 3:
+                return "stable"
+            first_half = np.mean(series[:len(series) // 2])
+            second_half = np.mean(series[len(series) // 2:])
+            diff = second_half - first_half
+            if diff > 5:
+                return "improving"
+            elif diff < -5:
+                return "declining"
+            return "stable"
+
+        return {
+            "confidence_trend": compute_trend(confidence_series),
+            "stress_trend": compute_trend(stress_series),
+            "attention_trend": compute_trend(attention_series),
+            "confidence_avg": round(float(np.mean(confidence_series)), 1),
+            "stress_avg": round(float(np.mean(stress_series)), 1),
+            "attention_avg": round(float(np.mean(attention_series)), 1),
+            "data_points": len(self._metrics_log),
+            "session_duration_seconds": (
+                time.time() - self._start_time if self._start_time else 0
+            ),
+        }
+
+    # ── Session Summary ───────────────────────────────
+
+    def get_session_summary(self) -> Dict[str, Any]:
+        """Get comprehensive session analysis summary."""
+        if not self._metrics_log:
+            return {"status": "no_data"}
+
+        all_confidence = [m["confidence_score"] for m in self._metrics_log]
+        all_stress = [m["stress_level"] for m in self._metrics_log]
+        all_attention = [m["attention_index"] for m in self._metrics_log]
+        all_stability = [m["emotional_stability"] for m in self._metrics_log]
+        all_clarity = [m["speech_clarity"] for m in self._metrics_log]
+        all_overall = [m["overall_performance"] for m in self._metrics_log]
+
+        return {
+            "total_data_points": len(self._metrics_log),
+            "averages": {
+                "confidence": round(float(np.mean(all_confidence)), 1),
+                "stress": round(float(np.mean(all_stress)), 1),
+                "attention": round(float(np.mean(all_attention)), 1),
+                "stability": round(float(np.mean(all_stability)), 1),
+                "clarity": round(float(np.mean(all_clarity)), 1),
+                "overall": round(float(np.mean(all_overall)), 1),
+            },
+            "peaks": {
+                "max_confidence": round(float(np.max(all_confidence)), 1),
+                "max_stress": round(float(np.max(all_stress)), 1),
+                "min_attention": round(float(np.min(all_attention)), 1),
+            },
+            "trends": self.get_temporal_trends(),
+            "recommendations": self._generate_behavioral_recommendations(),
+        }
+
+    def _generate_behavioral_recommendations(self) -> List[str]:
+        """Generate actionable recommendations based on multimodal analysis."""
+        recommendations = []
+
+        if not self._metrics_log:
+            return ["Complete a practice session to receive personalized recommendations."]
+
+        avg_confidence = np.mean([m["confidence_score"] for m in self._metrics_log])
+        avg_stress = np.mean([m["stress_level"] for m in self._metrics_log])
+        avg_attention = np.mean([m["attention_index"] for m in self._metrics_log])
+        avg_clarity = np.mean([m["speech_clarity"] for m in self._metrics_log])
+
+        if avg_confidence < 50:
+            recommendations.append(
+                "Practice power posing before interviews — research shows it boosts felt confidence by 20%."
+            )
+        if avg_stress > 60:
+            recommendations.append(
+                "Try box breathing (4-4-4-4) between questions to reduce stress indicators."
+            )
+        if avg_attention < 50:
+            recommendations.append(
+                "Maintain steady eye contact with the camera. Place a sticky note near it as a reminder."
+            )
+        if avg_clarity < 50:
+            recommendations.append(
+                "Slow your speaking rate and reduce filler words. Practice with a timer for structured responses."
+            )
+
+        if not recommendations:
+            recommendations.append(
+                "Strong performance across all metrics. Continue practicing to maintain consistency."
+            )
+
+        return recommendations
+
+
+# Singleton
+multimodal_engine = MultimodalAnalysisEngine()

@@ -147,9 +147,47 @@ async def start_candidate_interview(token: str, body: CandidateStartRequest):
     if job_description:
         jd_analysis = await ai_service.analyze_job_description(job_description, job_role)
 
+    # ── Collect questions from other candidates in the same session ──
+    # This ensures each candidate gets different questions for a fair assessment
+    other_candidate_questions = []
+    try:
+        other_cursor = db.candidate_ai_sessions.find(
+            {
+                "interview_session_id": candidate["interview_session_id"],
+                "candidate_token": {"$ne": token},
+            },
+            {"questions.question": 1},
+        )
+        async for other_sess in other_cursor:
+            for q in other_sess.get("questions", []):
+                if q.get("question") and q["question"] not in other_candidate_questions:
+                    other_candidate_questions.append(q["question"])
+    except Exception:
+        pass  # Non-critical
+
+    # Also check if this candidate has past completed sessions (re-take scenario)
+    past_candidate_questions = []
+    try:
+        past_sessions = db.candidate_ai_sessions.find(
+            {
+                "candidate_email": candidate.get("email", ""),
+                "status": "completed",
+            },
+            {"questions.question": 1},
+        ).sort("created_at", -1).limit(3)
+        async for past in past_sessions:
+            for q in past.get("questions", []):
+                if q.get("question") and q["question"] not in past_candidate_questions:
+                    past_candidate_questions.append(q["question"])
+    except Exception:
+        pass
+
+    # Merge: prioritize avoiding other-candidate questions + past questions
+    avoid_questions = other_candidate_questions + past_candidate_questions
+
     # Generate first question
     q_data = await ai_service.generate_question(
-        job_role, difficulty, [],
+        job_role, difficulty, avoid_questions,
         round_type="Technical",
         job_description=job_description,
         experience_level=experience_level,
@@ -235,6 +273,23 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest):
     if ai_session["status"] == "completed":
         raise HTTPException(status_code=400, detail="Interview already completed")
 
+    # Collect questions from other candidates in the same session for diversity
+    other_candidate_questions = []
+    try:
+        other_cursor = db.candidate_ai_sessions.find(
+            {
+                "interview_session_id": ai_session["interview_session_id"],
+                "candidate_token": {"$ne": token},
+            },
+            {"questions.question": 1},
+        )
+        async for other_sess in other_cursor:
+            for q in other_sess.get("questions", []):
+                if q.get("question") and q["question"] not in other_candidate_questions:
+                    other_candidate_questions.append(q["question"])
+    except Exception:
+        pass
+
     # Check time (using active time)
     started_at = ai_session.get("started_at", ai_session["created_at"])
     duration = ai_session.get("duration_minutes", 30)
@@ -292,7 +347,7 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest):
         next_difficulty = ai_service.determine_next_difficulty(
             last_score, ai_session.get("difficulty", "medium")
         )
-        prev_questions = [q["question"] for q in ai_session["questions"]]
+        prev_questions = [q["question"] for q in ai_session["questions"]] + other_candidate_questions
         prev_answers = [r["answer_text"] for r in all_responses] + [answer_text]
 
         deep_eval_task = ai_service.evaluate_answer_deep(
@@ -415,7 +470,7 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest):
                         difficulty=ai_service.determine_next_difficulty(
                             evaluation.get("overall_score", 50), ai_session.get("difficulty", "medium")
                         ),
-                        previous_questions=[q["question"] for q in ai_session["questions"]],
+                        previous_questions=[q["question"] for q in ai_session["questions"]] + other_candidate_questions,
                         round_type="HR",
                         job_description=ai_session.get("job_description", ""),
                         experience_level=ai_session.get("experience_level", ""),
@@ -430,7 +485,7 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest):
         next_difficulty = ai_service.determine_next_difficulty(
             last_score, ai_session.get("difficulty", "medium")
         )
-        prev_questions = [q["question"] for q in ai_session["questions"]]
+        prev_questions = [q["question"] for q in ai_session["questions"]] + other_candidate_questions
         prev_answers = [r["answer_text"] for r in all_responses]
 
         next_q_data = await ai_service.generate_question(

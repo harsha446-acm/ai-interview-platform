@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { LogOut, User, Menu, X, Sparkles } from 'lucide-react';
+import { LogOut, User, Menu, X, Sparkles, Settings } from 'lucide-react';
 
 export default function Navbar() {
   const { user, logout } = useAuth();
@@ -81,6 +81,9 @@ export default function Navbar() {
                       <span className="text-xs bg-primary-50 text-primary-700 px-2 py-0.5 rounded-full capitalize ml-2">{user.role}</span>
                     </div>
                   </div>
+                  <Link to="/profile" className="p-2 text-gray-400 hover:text-primary-600 hover:bg-primary-50 rounded-lg transition-all" title="Account Settings">
+                    <Settings size={18} />
+                  </Link>
                   <button onClick={handleLogout} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all" title="Logout">
                     <LogOut size={18} />
                   </button>
@@ -130,6 +133,7 @@ export default function Navbar() {
                     <Link to="/hr/create-session" onClick={() => setOpen(false)} className="block px-4 py-3 text-gray-700 hover:bg-gray-50 rounded-xl">New Session</Link>
                   </>
                 )}
+                <Link to="/profile" onClick={() => setOpen(false)} className="block px-4 py-3 text-gray-700 hover:bg-gray-50 rounded-xl">Account Settings</Link>
                 <button onClick={() => { handleLogout(); setOpen(false); }} className="block w-full text-left px-4 py-3 text-red-600 hover:bg-red-50 rounded-xl font-medium">
                   Logout
                 </button>

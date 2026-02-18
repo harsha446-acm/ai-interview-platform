@@ -15,7 +15,7 @@ export default function StudentDashboard() {
 
   const completed = history.filter((h) => h.status === 'completed');
   const avgScore = completed.length
-    ? Math.round(completed.reduce((a, b) => a + (b.overall_score || 0), 0) / completed.length)
+    ? Math.round(completed.reduce((a, b) => a + (b.technical_score || 0), 0) / completed.length)
     : 0;
 
   const scoreColor = avgScore >= 75 ? 'text-green-600' : avgScore >= 50 ? 'text-yellow-600' : 'text-red-500';
@@ -101,8 +101,8 @@ export default function StudentDashboard() {
                 <thead>
                   <tr className="bg-gray-50/80">
                     <th className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Role</th>
-                    <th className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Difficulty</th>
-                    <th className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Progress</th>
+                    <th className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Round</th>
+                    <th className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Questions</th>
                     <th className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
                     <th className="px-6 py-3.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Date</th>
                     <th className="px-6 py-3.5"></th>
@@ -110,23 +110,19 @@ export default function StudentDashboard() {
                 </thead>
                 <tbody className="divide-y divide-gray-50">
                   {history.map((h) => (
-                    <tr key={h.id} className="hover:bg-primary-50/30 transition-colors">
+                    <tr key={h.session_id} className="hover:bg-primary-50/30 transition-colors">
                       <td className="px-6 py-4 text-sm font-semibold text-gray-900">{h.job_role}</td>
                       <td className="px-6 py-4">
                         <span className={`text-xs px-2.5 py-1 rounded-full font-medium capitalize ${
-                          h.difficulty === 'hard' ? 'bg-red-50 text-red-600'
-                            : h.difficulty === 'medium' ? 'bg-yellow-50 text-yellow-700'
-                            : 'bg-green-50 text-green-600'
+                          h.current_round === 'HR' ? 'bg-purple-50 text-purple-600'
+                            : 'bg-blue-50 text-blue-600'
                         }`}>
-                          {h.difficulty}
+                          {h.current_round}
                         </span>
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-2">
-                          <div className="w-20 h-2 bg-gray-100 rounded-full overflow-hidden">
-                            <div className="h-full gradient-bg rounded-full" style={{ width: `${(h.answered / h.total_questions) * 100}%` }} />
-                          </div>
-                          <span className="text-xs text-gray-500">{h.answered}/{h.total_questions}</span>
+                          <span className="text-xs text-gray-500">{h.questions_answered} answered</span>
                         </div>
                       </td>
                       <td className="px-6 py-4">
@@ -143,7 +139,7 @@ export default function StudentDashboard() {
                       </td>
                       <td className="px-6 py-4">
                         {h.status === 'completed' && (
-                          <Link to={`/report/${h.id}`} className="text-primary-600 text-sm font-semibold hover:text-primary-700 flex items-center gap-1 transition">
+                          <Link to={`/report/${h.session_id}`} className="text-primary-600 text-sm font-semibold hover:text-primary-700 flex items-center gap-1 transition">
                             Report <ArrowRight size={14} />
                           </Link>
                         )}

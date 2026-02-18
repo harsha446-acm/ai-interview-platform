@@ -35,17 +35,5 @@ services:
       - REDIS_URL=redis://redis:6379
     restart: unless-stopped
 
-  # ── Ollama (LLM) ──────────────
-  ollama:
-    image: ollama/ollama
-    container_name: interview_ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    restart: unless-stopped
-    # After starting, run: docker exec -it interview_ollama ollama pull llama3
-
 volumes:
   mongo_data:
-  ollama_data:

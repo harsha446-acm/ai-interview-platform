@@ -4,6 +4,10 @@ import axios from 'axios';
 // In development, Vite proxy handles /api → localhost:8000
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
+// WebSocket base URL: in production, point to the backend service directly
+// VITE_WS_URL should be like wss://ai-interview-backend.onrender.com
+export const WS_BASE = import.meta.env.VITE_WS_URL || '';
+
 const api = axios.create({
   baseURL: API_BASE,
   headers: { 'Content-Type': 'application/json' },
@@ -35,6 +39,9 @@ api.interceptors.response.use(
 export const authAPI = {
   register: (data) => api.post('/auth/register', data),
   login: (data) => api.post('/auth/login', data),
+  getMe: () => api.get('/auth/me'),
+  updateProfile: (data) => api.put('/auth/profile', data),
+  deleteAccount: () => api.delete('/auth/account'),
 };
 
 // ── Mock Interview ───────────────────────────────────
@@ -47,6 +54,46 @@ export const mockAPI = {
   history: () => api.get('/mock-interview/history/me'),
   checkTime: (sessionId) => api.get(`/mock-interview/${sessionId}/time`),
   endInterview: (sessionId) => api.post(`/mock-interview/${sessionId}/end`),
+  // Practice mode live metrics
+  getPracticeMetrics: (sessionId, answerText, videoFrame) => api.post(`/mock-interview/${sessionId}/practice/metrics`, { partial_text: answerText || '', video_frame: videoFrame || null }),
+  getPracticeSummary: (sessionId) => api.get(`/mock-interview/${sessionId}/practice/summary`),
+};
+
+// ── Practice Mode ────────────────────────────────────
+export const practiceAPI = {
+  getTopics: () => api.get('/practice/topics'),
+  startSession: (data) => api.post('/practice/start', data),
+  getQuestion: (sessionId) => api.get(`/practice/${sessionId}/question`),
+  updateMetrics: (sessionId) => api.post(`/practice/${sessionId}/metrics`),
+  submitAnswer: (sessionId, data) => api.post(`/practice/${sessionId}/answer`, data),
+  endSession: (sessionId) => api.post(`/practice/${sessionId}/end`),
+  getStatus: (sessionId) => api.get(`/practice/${sessionId}/status`),
+  history: () => api.get('/practice/history/me'),
+};
+
+// ── Analytics (Explainability / Fairness / Roadmap) ──
+export const analyticsAPI = {
+  explain: (data) => api.post('/analytics/explain', data),
+  auditFairness: (data) => api.post('/analytics/fairness/audit', data),
+  getFairnessReport: (params) => api.get('/analytics/fairness/report', { params }),
+  getFairnessDrift: (params) => api.get('/analytics/fairness/drift', { params }),
+  generateRoadmap: (data) => api.post('/analytics/roadmap', data),
+  updateProgress: (data) => api.post('/analytics/roadmap/progress', data),
+};
+
+// ── Data Collection (GitHub / LinkedIn / Resume) ─────
+export const dataCollectionAPI = {
+  analyzeGithub: (url) => api.post('/data-collection/analyze-github', null, { params: { github_url: url } }),
+  analyzeLinkedin: (url) => api.post('/data-collection/analyze-linkedin', null, { params: { linkedin_url: url } }),
+  uploadResume: (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post('/data-collection/upload-resume', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+  getProfile: () => api.get('/data-collection/profile'),
+  buildFullProfile: (data) => api.post('/data-collection/build-full-profile', null, { params: data }),
 };
 
 // ── HR Interview Sessions ────────────────────────────

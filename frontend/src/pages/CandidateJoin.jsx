@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
-import { candidateAPI } from '../services/api';
+import { candidateAPI, WS_BASE } from '../services/api';
 import toast from 'react-hot-toast';
 import {
   Mic, MicOff, Camera, Send, Loader2, User, Briefcase, Clock,
@@ -36,6 +36,8 @@ export default function CandidateJoin() {
   const [techScore, setTechScore] = useState(null);
   const [interviewSessionId, setInterviewSessionId] = useState(null);
   const [screenSharing, setScreenSharing] = useState(false);
+  const [permissionDenied, setPermissionDenied] = useState(false);
+  const [permissionError, setPermissionError] = useState('');
 
   const videoRef = useRef(null);
   const streamRef = useRef(null);
@@ -45,6 +47,13 @@ export default function CandidateJoin() {
   const wsRef = useRef(null);
   const peerConnectionsRef = useRef({});
   const screenStreamRef = useRef(null);
+
+  // Live conversation mode refs
+  const silenceTimerRef = useRef(null);
+  const autoListenRef = useRef(false);
+  const isSubmittingRef = useRef(false);
+  const answerRef = useRef('');
+  const SILENCE_TIMEOUT = 3500;
 
   // ── Load interview info ────────────────────────────
   useEffect(() => {
@@ -66,16 +75,38 @@ export default function CandidateJoin() {
     loadInfo();
   }, [token]);
 
-  // ── TTS: Speak question ────────────────────────────
+  // Keep answerRef in sync with answer state
+  useEffect(() => { answerRef.current = answer; }, [answer]);
+
+  // ── TTS: Speak question, then auto-start listening ──
   const speakQuestion = useCallback((text) => {
     if (!ttsEnabled || !text) return;
+    // Stop listening while AI speaks
+    if (recognitionRef.current) {
+      autoListenRef.current = false;
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+      setIsRecording(false);
+    }
     synthRef.current.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 0.95;
     utterance.pitch = 1;
     utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => setIsSpeaking(false);
+    utterance.onend = () => {
+      setIsSpeaking(false);
+      autoListenRef.current = true;
+      setTimeout(() => {
+        if (autoListenRef.current && !isSubmittingRef.current) {
+          startSpeechRecognition();
+        }
+      }, 400);
+    };
+    utterance.onerror = () => {
+      setIsSpeaking(false);
+      autoListenRef.current = true;
+      startSpeechRecognition();
+    };
     synthRef.current.speak(utterance);
   }, [ttsEnabled]);
 
@@ -178,10 +209,12 @@ export default function CandidateJoin() {
   // ── Cleanup ────────────────────────────────────────
   useEffect(() => {
     return () => {
+      autoListenRef.current = false;
       streamRef.current?.getTracks().forEach((t) => t.stop());
       screenStreamRef.current?.getTracks().forEach((t) => t.stop());
       synthRef.current.cancel();
       if (recognitionRef.current) recognitionRef.current.stop();
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       clearInterval(timeIntervalRef.current);
       wsRef.current?.close();
       Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
@@ -192,8 +225,14 @@ export default function CandidateJoin() {
   useEffect(() => {
     if (phase !== 'interview' || !interviewSessionId || !token) return;
 
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${wsProtocol}//${window.location.host}/ws/interview/${interviewSessionId}?token=${token}&role=candidate&name=${encodeURIComponent(candidateName)}`;
+    // In production (Render), WS_BASE points to the backend; in dev, use same host
+    let wsUrl;
+    if (WS_BASE) {
+      wsUrl = `${WS_BASE}/ws/interview/${interviewSessionId}?token=${token}&role=candidate&name=${encodeURIComponent(candidateName)}`;
+    } else {
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      wsUrl = `${wsProtocol}//${window.location.host}/ws/interview/${interviewSessionId}?token=${token}&role=candidate&name=${encodeURIComponent(candidateName)}`;
+    }
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -303,6 +342,27 @@ export default function CandidateJoin() {
       return;
     }
 
+    setPermissionDenied(false);
+    setPermissionError('');
+
+    // Request camera + mic permissions first
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      streamRef.current = stream;
+      if (videoRef.current) videoRef.current.srcObject = stream;
+      setCameraOn(true);
+    } catch (err) {
+      setPermissionDenied(true);
+      if (err.name === 'NotAllowedError') {
+        setPermissionError('Camera and microphone access is required to start the interview. Please allow access in your browser settings and try again.');
+      } else if (err.name === 'NotFoundError') {
+        setPermissionError('No camera or microphone found. Please connect a camera and microphone to start the interview.');
+      } else {
+        setPermissionError(`Unable to access camera/microphone: ${err.message}. Please check your device settings.`);
+      }
+      return;
+    }
+
     // Request screen share before API call (needs user gesture)
     try {
       const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
@@ -337,15 +397,21 @@ export default function CandidateJoin() {
     }
   };
 
-  // ── Submit answer ──────────────────────────────────
-  const submitAnswer = async () => {
+  // ── Submit answer (called manually or by silence detection) ──
+  const doSubmit = async (answerText) => {
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+
     const isCoding = currentQuestion?.is_coding;
-    if (!isCoding && !answer.trim()) {
-      toast.error('Please speak your answer using the microphone');
+    const finalAnswer = answerText || answerRef.current;
+
+    if (!isCoding && !finalAnswer.trim()) {
+      isSubmittingRef.current = false;
       return;
     }
     if (isCoding && !codeText.trim()) {
       toast.error('Please write your code solution');
+      isSubmittingRef.current = false;
       return;
     }
 
@@ -357,7 +423,7 @@ export default function CandidateJoin() {
     try {
       const payload = {
         question_id: currentQuestion.question_id,
-        answer_text: isCoding ? (answer || 'Code submitted') : answer,
+        answer_text: isCoding ? (finalAnswer || 'Code submitted') : finalAnswer,
       };
       if (isCoding) {
         payload.code_text = codeText;
@@ -387,6 +453,7 @@ export default function CandidateJoin() {
             setCurrentQuestion(res.data.next_question);
             setQuestionNumber((prev) => prev + 1);
             setAnswer('');
+            answerRef.current = '';
             setCodeText('');
             setEvaluation(null);
           }, 3000);
@@ -395,6 +462,7 @@ export default function CandidateJoin() {
             setCurrentQuestion(res.data.next_question);
             setQuestionNumber((prev) => prev + 1);
             setAnswer('');
+            answerRef.current = '';
             setCodeText('');
             setEvaluation(null);
           }, 3000);
@@ -404,8 +472,17 @@ export default function CandidateJoin() {
       toast.error(err.response?.data?.detail || 'Failed to submit answer');
     } finally {
       setLoading(false);
+      isSubmittingRef.current = false;
     }
   };
+
+  // Auto-submit triggered by silence detection
+  const submitAnswerAuto = useCallback(() => {
+    doSubmit(answerRef.current);
+  }, [currentQuestion, token, codeText, codeLanguage, currentRound]);
+
+  // Manual submit (button click)
+  const submitAnswer = () => doSubmit(answer);
 
   // ── Format time ────────────────────────────────────
   const formatTime = (timeStatus) => {
@@ -472,6 +549,16 @@ export default function CandidateJoin() {
               <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-sm text-yellow-800">
                 <p><strong>Two Rounds:</strong> Technical (70% cutoff to proceed) → HR</p>
               </div>
+
+              {permissionDenied && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-800 flex items-start gap-3">
+                  <AlertTriangle size={20} className="text-red-500 mt-0.5 shrink-0" />
+                  <div>
+                    <p className="font-semibold mb-1">Permission Required</p>
+                    <p>{permissionError}</p>
+                  </div>
+                </div>
+              )}
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Your Full Name</label>
@@ -653,31 +740,6 @@ export default function CandidateJoin() {
                 </div>
               )}
             </div>
-            <div className="flex items-center space-x-3">
-              <button
-                onClick={toggleCamera}
-                className={`flex-1 py-2 rounded-lg text-sm font-medium flex items-center justify-center space-x-1 ${
-                  cameraOn ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'
-                }`}
-              >
-                <Camera size={16} />
-                <span>{cameraOn ? 'On' : 'Off'}</span>
-              </button>
-              <button
-                onClick={toggleRecording}
-                disabled={isCoding}
-                className={`flex-1 py-2.5 rounded-lg text-sm font-medium flex items-center justify-center space-x-1 transition ${
-                  isRecording
-                    ? 'bg-red-500 text-white animate-pulse'
-                    : isCoding
-                    ? 'bg-gray-50 text-gray-300 cursor-not-allowed'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                }`}
-              >
-                {isRecording ? <MicOff size={16} /> : <Mic size={16} />}
-                <span>{isRecording ? 'Stop' : 'Speak'}</span>
-              </button>
-            </div>
 
             {/* Screen share status */}
             {screenSharing && (
@@ -774,22 +836,56 @@ export default function CandidateJoin() {
               </div>
             ) : (
               <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Your Answer <span className="text-gray-400">(speak using microphone)</span>
-                </label>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-sm font-medium text-gray-700">
+                    Your Answer <span className="text-gray-400">(live conversation mode)</span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    {isRecording && (
+                      <span className="flex items-center gap-1.5 px-3 py-1.5 bg-green-100 text-green-700 rounded-full text-xs font-medium">
+                        <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                        Listening
+                      </span>
+                    )}
+                    {isSpeaking && (
+                      <span className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">
+                        <Volume2 size={12} className="animate-pulse" />
+                        AI Speaking
+                      </span>
+                    )}
+                    <button
+                      onClick={toggleRecording}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition ${
+                        isRecording ? 'bg-red-100 text-red-600 hover:bg-red-200' : 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200'
+                      }`}
+                      title={isRecording ? 'Pause mic' : 'Resume mic'}
+                    >
+                      {isRecording ? <MicOff size={14} /> : <Mic size={14} />}
+                      {isRecording ? 'Pause' : 'Resume'}
+                    </button>
+                  </div>
+                </div>
                 <div className={`w-full min-h-[120px] px-4 py-3 border rounded-lg text-gray-700 text-base leading-relaxed ${
-                  isRecording ? 'border-red-400 bg-red-50' : 'border-gray-200 bg-gray-50'
+                  isRecording ? 'border-green-400 bg-green-50/50' : isSpeaking ? 'border-blue-300 bg-blue-50/30' : 'border-gray-200 bg-gray-50'
                 }`}>
                   {answer || (
                     <span className="text-gray-400 italic">
-                      {isRecording ? 'Listening... speak now' : 'Click "Speak" to start answering with your voice'}
+                      {isSpeaking ? 'AI is speaking... listen to the question' : isRecording ? '🎤 Listening... speak your answer naturally' : 'Microphone paused'}
                     </span>
                   )}
                 </div>
-                {isRecording && (
-                  <div className="flex items-center space-x-2 mt-2 text-red-600 text-sm">
-                    <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
-                    <span>Recording... speak your answer</span>
+                {isRecording && !isSpeaking && (
+                  <div className="flex items-center justify-between mt-2">
+                    <div className="flex items-center space-x-2 text-green-600 text-sm">
+                      <div className="w-2.5 h-2.5 bg-green-500 rounded-full animate-pulse"></div>
+                      <span>Speak naturally — answer auto-submits after you pause</span>
+                    </div>
+                  </div>
+                )}
+                {loading && (
+                  <div className="flex items-center space-x-2 mt-2 text-primary-600 text-sm">
+                    <Loader2 size={14} className="animate-spin" />
+                    <span>Evaluating your answer...</span>
                   </div>
                 )}
                 <button
@@ -798,7 +894,7 @@ export default function CandidateJoin() {
                   className="mt-4 w-full gradient-bg text-white py-3 rounded-xl font-semibold flex items-center justify-center space-x-2 hover:opacity-90 transition disabled:opacity-50"
                 >
                   {loading ? <Loader2 className="animate-spin" size={20} /> : <Send size={18} />}
-                  <span>{loading ? 'Evaluating...' : 'Submit Answer'}</span>
+                  <span>{loading ? 'Evaluating...' : 'Submit Early'}</span>
                 </button>
               </div>
             )}

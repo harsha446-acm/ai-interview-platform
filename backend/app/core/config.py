@@ -22,8 +22,9 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = ""
     EMAIL_FROM: str = ""
 
-    # Ollama
-    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    # Gemini
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-2.5-flash"
 
     # Frontend
     FRONTEND_URL: str = "http://localhost:5173"

@@ -133,5 +133,5 @@ def generate_pdf_report(report: dict) -> bytes:
             pdf.multi_cell(0, 6, f"Feedback: {feedback[:200]}")
         pdf.ln(5)
 
-    # Output
-    return pdf.output()
+    # Output — fpdf2's .output() returns bytearray; convert to bytes for StreamingResponse
+    return bytes(pdf.output())

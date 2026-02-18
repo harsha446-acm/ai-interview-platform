@@ -14,7 +14,7 @@ A production-ready web platform for AI-powered interview practice and corporate 
 | Backend      | Python 3.11+, FastAPI, Uvicorn, WebSockets       |
 | Database     | MongoDB (Motor async driver)                     |
 | Auth         | JWT (python-jose), bcrypt                        |
-| AI / LLM     | LLaMA 3 via Ollama (local)                      |
+| AI / LLM     | Google Gemini (gemini-2.5-flash)                 |
 | NLP          | SentenceTransformers (all-MiniLM-L6-v2)         |
 | Speech       | OpenAI Whisper (open-source, local)              |
 | Vision       | OpenCV + DeepFace (emotion/confidence detection) |
@@ -65,7 +65,7 @@ ai-interview-platform/
 - Python 3.11+
 - Node.js 18+
 - MongoDB (local or Atlas free tier)
-- Ollama (for LLaMA 3) — https://ollama.com
+- Google Gemini API key — https://aistudio.google.com/apikey
 
 ### 1. Clone & Setup Backend
 
@@ -86,10 +86,11 @@ mongod
 docker run -d -p 27017:27017 --name mongo mongo:7
 ```
 
-### 3. Start Ollama + Pull LLaMA 3
-```bash
-ollama serve              # Start Ollama server
-ollama pull llama3        # Download LLaMA 3 model
+### 3. Set Gemini API Key
+Add your Gemini API key to the `.env` file:
+```
+GEMINI_API_KEY=your-gemini-api-key-here
+GEMINI_MODEL=gemini-2.5-flash
 ```
 
 ### 4. Run Backend
@@ -115,9 +116,6 @@ Visit **http://localhost:5173**
 ```bash
 # Start everything
 docker compose up -d
-
-# Pull LLaMA 3 into Ollama container
-docker exec -it interview_ollama ollama pull llama3
 
 # Frontend still runs separately:
 cd frontend && npm install && npm run dev
@@ -210,7 +208,7 @@ EMAIL_FROM=your-email@gmail.com
 | Frontend    | Vercel (vercel.com)   |
 | Backend     | Render (render.com)   |
 | Database    | MongoDB Atlas Free    |
-| AI/LLM      | Self-hosted Ollama   |
+| AI/LLM      | Google Gemini API (free tier available) |
 
 ### Deploy Frontend to Vercel
 ```bash

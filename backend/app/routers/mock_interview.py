@@ -12,6 +12,7 @@ import time
 import uuid
 from datetime import datetime
 from typing import Optional
+from pydantic import BaseModel
 
 from bson import ObjectId
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -22,6 +23,8 @@ from app.core.security import get_current_user
 from app.models.schemas import MockInterviewStart, QuestionResponse, AnswerSubmit
 from app.services.ai_service import ai_service
 from app.services.report_service import generate_pdf_report
+from app.services.practice_mode_service import practice_mode_service
+from app.services.data_collection_service import data_collection_service
 
 router = APIRouter(prefix="/api/mock-interview", tags=["Mock Interview"])
 
@@ -35,12 +38,48 @@ async def start_mock_interview(data: MockInterviewStart, user: dict = Depends(ge
     db = get_database()
     start_ts = time.time()
 
-    # Analyze JD if provided (run in parallel with nothing else at start)
+    # Analyze JD and GitHub profile in parallel if provided
     jd_analysis = None
+    github_profile = None
+    tasks = []
+
     if data.job_description:
-        jd_analysis = await ai_service.analyze_job_description(
+        tasks.append(("jd", ai_service.analyze_job_description(
             data.job_description, data.job_role
+        )))
+
+    github_username = None
+    if data.github_url:
+        import re
+        gh = data.github_url.strip().rstrip("/")
+        m = re.search(r"github\.com/([A-Za-z0-9\-_]+)", gh)
+        github_username = m.group(1) if m else (gh if "/" not in gh and "." not in gh else None)
+        if github_username:
+            tasks.append(("github", data_collection_service.analyze_github_profile(github_username)))
+
+    if tasks:
+        results = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
+        for (key, _), result in zip(tasks, results):
+            if isinstance(result, Exception):
+                continue
+            if key == "jd":
+                jd_analysis = result
+            elif key == "github":
+                github_profile = result
+
+    # Store GitHub profile in user document for future use
+    if github_profile and "error" not in github_profile:
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$set": {"github_profile": github_profile, "github_username": github_username}},
         )
+
+    # Build enriched context from GitHub for question generation
+    github_context = ""
+    if github_profile and "error" not in github_profile:
+        langs = ", ".join(github_profile.get("primary_languages", [])[:5])
+        repos = ", ".join([r["name"] for r in github_profile.get("repositories", [])[:5]])
+        github_context = f"\nCandidate GitHub: languages={langs}; repos={repos}; stars={github_profile.get('total_stars', 0)}"
 
     session_doc = {
         "user_id": str(user["_id"]),
@@ -49,6 +88,8 @@ async def start_mock_interview(data: MockInterviewStart, user: dict = Depends(ge
         "job_description": data.job_description or "",
         "experience_level": data.experience_level or "",
         "jd_analysis": jd_analysis,
+        "github_profile": github_profile if github_profile and "error" not in github_profile else None,
+        "linkedin_url": data.linkedin_url or "",
         "status": "in_progress",
         "current_round": "Technical",
         "duration_minutes": data.duration_minutes,
@@ -64,13 +105,33 @@ async def start_mock_interview(data: MockInterviewStart, user: dict = Depends(ge
     result = await db.mock_sessions.insert_one(session_doc)
     session_id = str(result.inserted_id)
 
-    # Generate the first Technical question
+    # ── Fetch questions from user's previous sessions (same role) ──
+    # This ensures a returning user gets fresh questions instead of repeats
+    prev_session_questions = []
+    try:
+        past_cursor = db.mock_sessions.find(
+            {
+                "user_id": str(user["_id"]),
+                "job_role": data.job_role,
+                "_id": {"$ne": ObjectId(session_id)},
+            },
+            {"questions.question": 1},
+        ).sort("created_at", -1).limit(5)  # Last 5 sessions
+        async for past in past_cursor:
+            for q in past.get("questions", []):
+                if q.get("question") and q["question"] not in prev_session_questions:
+                    prev_session_questions.append(q["question"])
+    except Exception:
+        pass  # Non-critical — proceed without history
+
+    # Generate the first Technical question (enriched with GitHub context)
+    enriched_jd = (data.job_description or "") + github_context
     question_data = await ai_service.generate_question(
         job_role=data.job_role,
         difficulty=data.difficulty.value,
-        previous_questions=[],
+        previous_questions=prev_session_questions,
         round_type="Technical",
-        job_description=data.job_description or "",
+        job_description=enriched_jd,
         experience_level=data.experience_level or "",
         jd_analysis=jd_analysis,
     )
@@ -131,7 +192,23 @@ async def submit_answer(
         raise HTTPException(status_code=404, detail="Session not found")
     if session["user_id"] != str(user["_id"]):
         raise HTTPException(status_code=403, detail="Not your session")
-
+    # Fetch questions from user's past sessions (same role) for cross-session diversity
+    past_session_questions = []
+    try:
+        past_cursor = db.mock_sessions.find(
+            {
+                \"user_id\": str(user[\"_id\"]),
+                \"job_role\": session[\"job_role\"],
+                \"_id\": {\"$ne\": ObjectId(session_id)},
+            },
+            {\"questions.question\": 1},
+        ).sort(\"created_at\", -1).limit(5)
+        async for past in past_cursor:
+            for q in past.get(\"questions\", []):
+                if q.get(\"question\") and q[\"question\"] not in past_session_questions:
+                    past_session_questions.append(q[\"question\"])
+    except Exception:
+        pass
     # Check time (using active time)
     started_at = session.get("started_at", session["created_at"])
     duration = session.get("duration_minutes", 20)
@@ -194,7 +271,7 @@ async def submit_answer(
         next_difficulty = ai_service.determine_next_difficulty(
             last_score, session.get("difficulty", "medium")
         )
-        prev_questions = [q["question"] for q in session["questions"]]
+        prev_questions = [q["question"] for q in session["questions"]] + past_session_questions
         prev_answers = [r["answer_text"] for r in all_responses] + [answer_text]
 
         # Fire both tasks in parallel
@@ -312,7 +389,7 @@ async def submit_answer(
                         difficulty=ai_service.determine_next_difficulty(
                             evaluation.get("overall_score", 50), session.get("difficulty", "medium")
                         ),
-                        previous_questions=[q["question"] for q in session["questions"]],
+                        previous_questions=[q["question"] for q in session["questions"]] + past_session_questions,
                         round_type="HR",
                         job_description=session.get("job_description", ""),
                         experience_level=session.get("experience_level", ""),
@@ -327,7 +404,7 @@ async def submit_answer(
         next_difficulty = ai_service.determine_next_difficulty(
             last_score, session.get("difficulty", "medium")
         )
-        prev_questions = [q["question"] for q in session["questions"]]
+        prev_questions = [q["question"] for q in session["questions"]] + past_session_questions
         prev_answers = [r["answer_text"] for r in all_responses]
 
         next_q_data = await ai_service.generate_question(
@@ -414,6 +491,8 @@ async def end_interview(session_id: str, user: dict = Depends(get_current_user))
 
 @router.get("/{session_id}/report")
 async def get_report(session_id: str, user: dict = Depends(get_current_user)):
+    if not ObjectId.is_valid(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session ID")
     db = get_database()
     session = await db.mock_sessions.find_one({"_id": ObjectId(session_id)})
     if not session:
@@ -427,6 +506,8 @@ async def get_report(session_id: str, user: dict = Depends(get_current_user)):
 
 @router.get("/{session_id}/report/pdf")
 async def get_report_pdf(session_id: str, user: dict = Depends(get_current_user)):
+    if not ObjectId.is_valid(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session ID")
     db = get_database()
     session = await db.mock_sessions.find_one({"_id": ObjectId(session_id)})
     if not session:
@@ -455,18 +536,141 @@ async def my_history(user: dict = Depends(get_current_user)):
 
     sessions = []
     async for s in cursor:
+        # Compute overall score from round scores
+        tech = s.get("technical_score")
+        hr = s.get("hr_score")
+        scores = [sc for sc in [tech, hr] if sc is not None]
+        overall = round(sum(scores) / len(scores), 1) if scores else None
+
         sessions.append({
             "session_id": str(s["_id"]),
             "job_role": s.get("job_role", ""),
+            "difficulty": s.get("difficulty", "medium"),
             "status": s.get("status", ""),
             "current_round": s.get("current_round", "Technical"),
             "questions_answered": len(s.get("responses", [])),
-            "technical_score": s.get("technical_score"),
-            "hr_score": s.get("hr_score"),
+            "technical_score": tech,
+            "hr_score": hr,
+            "overall_score": overall,
             "created_at": s.get("created_at"),
             "completed_at": s.get("completed_at"),
         })
     return sessions
+
+
+# ── Practice Mode: Live Metrics ───────────────────────
+
+class PracticeMetricsRequest(BaseModel):
+    partial_text: str = ""
+    video_frame: Optional[str] = None  # base64-encoded JPEG frame
+
+
+@router.post("/{session_id}/practice/metrics")
+async def update_practice_metrics(
+    session_id: str,
+    body: PracticeMetricsRequest,
+    user: dict = Depends(get_current_user),
+):
+    """
+    Compute and return real-time practice metrics for the live dashboard.
+    Called periodically by the frontend during mock interviews.
+    Requires partial_text (the candidate's in-progress answer) to compute
+    real text-based metrics. Returns empty if no text provided.
+    """
+    partial_text = body.partial_text.strip()
+
+    # Don't return metrics if there's no answer text yet — avoids fake data
+    if not partial_text or len(partial_text) < 5:
+        return {"metrics": None, "suggestion": None}
+
+    db = get_database()
+    session = await db.mock_sessions.find_one({"_id": ObjectId(session_id)})
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session["user_id"] != str(user["_id"]):
+        raise HTTPException(status_code=403, detail="Not your session")
+
+    # Ensure there's a practice session tracker
+    practice_id = f"mock_{session_id}"
+    if practice_id not in practice_mode_service._active_sessions:
+        # Initialise a practice tracker for this mock session
+        practice_mode_service._active_sessions[practice_id] = {
+            "user_id": str(user["_id"]),
+            "status": "active",
+            "started_at": datetime.utcnow(),
+            "metrics_history": [],
+            "live_metrics": {
+                "confidence": 0, "stress": 0, "attention": 0,
+                "speech_clarity": 0, "emotional_stability": 0,
+                "answer_completeness": 0,
+            },
+            "current_question_idx": 0,
+            "answers": [],
+            "questions": [],
+            "topic": "mock_interview",
+            "topic_name": "Mock Interview",
+        }
+
+    # Decode video frame if provided
+    video_frame_data = None
+    if body.video_frame:
+        # Pass base64 string directly — multimodal_engine.analyze_face expects base64
+        video_frame_data = body.video_frame
+
+    # Generate live metrics via the practice service — pass the actual answer text and video
+    result = practice_mode_service.update_live_metrics(
+        practice_id,
+        partial_text=partial_text,
+        video_frame=video_frame_data,
+    )
+
+    return {
+        "metrics": result.get("metrics", {}),
+        "suggestion": result.get("suggestion"),
+    }
+
+
+@router.get("/{session_id}/practice/summary")
+async def get_practice_summary(
+    session_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Return aggregated practice analytics for a completed mock session."""
+    db = get_database()
+    session = await db.mock_sessions.find_one({"_id": ObjectId(session_id)})
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session["user_id"] != str(user["_id"]):
+        raise HTTPException(status_code=403, detail="Not your session")
+
+    practice_id = f"mock_{session_id}"
+    tracker = practice_mode_service._active_sessions.get(practice_id)
+
+    # Build summary from session responses
+    responses = session.get("responses", [])
+    scores = [r.get("evaluation", {}).get("overall_score", 0) for r in responses]
+
+    summary = {
+        "session_id": session_id,
+        "total_questions": len(responses),
+        "average_score": round(sum(scores) / len(scores), 1) if scores else 0,
+        "score_trend": scores,
+        "metrics_snapshots": tracker.get("metrics_history", [])[-20:] if tracker else [],
+        "strongest_area": "N/A",
+        "weakest_area": "N/A",
+    }
+
+    # Determine strongest/weakest from last metrics snapshot
+    if tracker and tracker.get("live_metrics"):
+        m = tracker["live_metrics"]
+        metric_keys = ["confidence", "stress", "attention", "speech_clarity",
+                       "emotional_stability", "answer_completeness"]
+        vals = {k: m.get(k, 50) for k in metric_keys}
+        if vals:
+            summary["strongest_area"] = max(vals, key=vals.get).replace("_", " ").title()
+            summary["weakest_area"] = min(vals, key=vals.get).replace("_", " ").title()
+
+    return summary
 
 
 # ── Helpers ───────────────────────────────────────────

@@ -5,7 +5,13 @@ import toast from 'react-hot-toast';
 import {
   Mic, MicOff, Camera, Send, Loader2, ArrowRight, Clock, Code,
   Volume2, VolumeX, Timer, AlertTriangle, CheckCircle, XCircle,
+  Activity, TrendingUp, Eye, Zap, Target, Brain,
 } from 'lucide-react';
+import {
+  RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
+  Radar, ResponsiveContainer, LineChart, Line, XAxis, YAxis,
+  CartesianGrid, Tooltip, BarChart, Bar,
+} from 'recharts';
 
 const ROLES = [
   'Software Engineer', 'Data Analyst', 'Product Manager', 'HR Manager',
@@ -21,6 +27,8 @@ export default function MockInterview() {
   const [jobDescription, setJobDescription] = useState('');
   const [experienceLevel, setExperienceLevel] = useState('');
   const [durationMinutes, setDurationMinutes] = useState(20);
+  const [githubUrl, setGithubUrl] = useState('');
+  const [linkedinUrl, setLinkedinUrl] = useState('');
   const [sessionId, setSessionId] = useState(null);
   const [currentQuestion, setCurrentQuestion] = useState(null);
   const [currentRound, setCurrentRound] = useState('Technical');
@@ -37,6 +45,23 @@ export default function MockInterview() {
   const [questionNumber, setQuestionNumber] = useState(0);
   const [endReason, setEndReason] = useState('');
   const [techScore, setTechScore] = useState(null);
+  const [permissionDenied, setPermissionDenied] = useState(false);
+  const [permissionError, setPermissionError] = useState('');
+
+  // Live metrics state
+  const [liveMetrics, setLiveMetrics] = useState(null);
+  const [metricsHistory, setMetricsHistory] = useState([]);
+  const [scoreHistory, setScoreHistory] = useState([]);
+  const [microSuggestion, setMicroSuggestion] = useState('');
+  const [eyeTrackAlert, setEyeTrackAlert] = useState(false);
+  const eyeTrackTimeoutRef = useRef(null);
+
+  // Live conversation mode refs
+  const silenceTimerRef = useRef(null);
+  const autoListenRef = useRef(false);       // whether to auto-listen after AI speaks
+  const isSubmittingRef = useRef(false);      // prevent double-submit
+  const answerRef = useRef('');               // track answer for silence-submit
+  const SILENCE_TIMEOUT = 3500;               // ms of silence before auto-submit
 
   const videoRef = useRef(null);
   const mediaRecorderRef = useRef(null);
@@ -46,21 +71,46 @@ export default function MockInterview() {
   const timeIntervalRef = useRef(null);
   const synthRef = useRef(window.speechSynthesis);
 
-  // ── TTS: Speak question aloud ──────────────────────
+  // Keep answerRef in sync with answer state
+  useEffect(() => { answerRef.current = answer; }, [answer]);
+
+  // ── TTS: Speak question aloud, then auto-start listening ──
   const speakQuestion = useCallback((text) => {
     if (!ttsEnabled || !text) return;
+    // Stop listening while AI speaks
+    if (recognitionRef.current) {
+      autoListenRef.current = false;
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+      setIsRecording(false);
+    }
     synthRef.current.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 0.95;
     utterance.pitch = 1;
     utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => setIsSpeaking(false);
+    utterance.onend = () => {
+      setIsSpeaking(false);
+      // Auto-start listening after AI finishes speaking (live conversation)
+      autoListenRef.current = true;
+      setTimeout(() => {
+        if (autoListenRef.current && !isSubmittingRef.current) {
+          startSpeechRecognition();
+        }
+      }, 400); // brief pause before listening
+    };
+    utterance.onerror = () => {
+      setIsSpeaking(false);
+      // Still auto-listen even if TTS errors
+      autoListenRef.current = true;
+      startSpeechRecognition();
+    };
     synthRef.current.speak(utterance);
   }, [ttsEnabled]);
 
-  // ── Speech-to-text (Web Speech API) ────────────────
+  // ── Speech-to-text (Web Speech API) — Live Conversation Mode ──
   const startSpeechRecognition = useCallback(() => {
+    if (recognitionRef.current || isSubmittingRef.current) return;
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
       toast.error('Speech recognition not supported in this browser');
@@ -71,7 +121,24 @@ export default function MockInterview() {
     recognition.interimResults = true;
     recognition.lang = 'en-US';
 
-    let finalTranscript = answer;
+    let finalTranscript = answerRef.current;
+
+    // Reset silence timer whenever we get speech
+    const resetSilenceTimer = () => {
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = setTimeout(() => {
+        // Silence detected — auto-submit if there's an answer
+        if (answerRef.current.trim().length >= 5 && !isSubmittingRef.current) {
+          autoListenRef.current = false;
+          if (recognitionRef.current) {
+            recognitionRef.current.stop();
+            recognitionRef.current = null;
+          }
+          setIsRecording(false);
+          submitAnswerAuto();
+        }
+      }, SILENCE_TIMEOUT);
+    };
 
     recognition.onresult = (event) => {
       let interim = '';
@@ -83,25 +150,49 @@ export default function MockInterview() {
           interim += transcript;
         }
       }
-      setAnswer(finalTranscript.trim() + (interim ? ' ' + interim : ''));
+      const newAnswer = finalTranscript.trim() + (interim ? ' ' + interim : '');
+      setAnswer(newAnswer);
+      answerRef.current = newAnswer;
+      // User is speaking — reset the silence timer
+      resetSilenceTimer();
     };
 
     recognition.onerror = (event) => {
-      if (event.error !== 'no-speech') {
+      if (event.error !== 'no-speech' && event.error !== 'aborted') {
         console.error('Speech recognition error:', event.error);
       }
     };
 
     recognition.onend = () => {
       setIsRecording(false);
+      recognitionRef.current = null;
+      // Auto-restart if we're still in conversation mode and not submitting
+      if (autoListenRef.current && !isSubmittingRef.current) {
+        setTimeout(() => {
+          if (autoListenRef.current && !isSubmittingRef.current) {
+            startSpeechRecognition();
+          }
+        }, 300);
+      }
     };
 
-    recognition.start();
-    recognitionRef.current = recognition;
-    setIsRecording(true);
-  }, [answer]);
+    try {
+      recognition.start();
+      recognitionRef.current = recognition;
+      setIsRecording(true);
+      // Start silence timer (handles case where user doesn't speak at all)
+      resetSilenceTimer();
+    } catch (e) {
+      console.error('Failed to start recognition:', e);
+    }
+  }, []);
 
   const stopSpeechRecognition = useCallback(() => {
+    autoListenRef.current = false;
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
     if (recognitionRef.current) {
       recognitionRef.current.stop();
       recognitionRef.current = null;
@@ -113,6 +204,7 @@ export default function MockInterview() {
     if (isRecording) {
       stopSpeechRecognition();
     } else {
+      autoListenRef.current = true;
       startSpeechRecognition();
     }
   }, [isRecording, startSpeechRecognition, stopSpeechRecognition]);
@@ -167,15 +259,149 @@ export default function MockInterview() {
   // ── Cleanup ────────────────────────────────────────
   useEffect(() => {
     return () => {
+      autoListenRef.current = false;
       streamRef.current?.getTracks().forEach((t) => t.stop());
       synthRef.current.cancel();
       if (recognitionRef.current) recognitionRef.current.stop();
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       clearInterval(timeIntervalRef.current);
+      if (eyeTrackTimeoutRef.current) clearTimeout(eyeTrackTimeoutRef.current);
     };
   }, []);
 
-  // ── Start interview ────────────────────────────────
+  // ── Re-attach camera stream when video element mounts ──
+  useEffect(() => {
+    if (phase === 'interview' && videoRef.current && streamRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+    }
+  }, [phase]);
+
+  // ── Live metrics polling (only after first answer submitted) ──
+  useEffect(() => {
+    if (phase !== 'interview' || !sessionId) return;
+    // Don't poll until user has started typing/speaking an answer
+    if (!answer || answer.trim().length < 5) return;
+
+    // Helper: capture a video frame as a base64 JPEG
+    const captureVideoFrame = () => {
+      if (!videoRef.current || !cameraOn) return null;
+      try {
+        const video = videoRef.current;
+        if (video.videoWidth === 0 || video.videoHeight === 0) return null;
+        const canvas = document.createElement('canvas');
+        canvas.width = 320;  // Downscale for performance
+        canvas.height = 240;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, 320, 240);
+        return canvas.toDataURL('image/jpeg', 0.6).split(',')[1]; // base64 only
+      } catch {
+        return null;
+      }
+    };
+
+    const fetchMetrics = async () => {
+      try {
+        const videoFrame = captureVideoFrame();
+        const { data } = await mockAPI.getPracticeMetrics(sessionId, answer, videoFrame);
+        if (data.metrics) {
+          setLiveMetrics(data.metrics);
+          setMetricsHistory(prev => [
+            ...prev.slice(-59),
+            { time: prev.length + 1, confidence: data.metrics.confidence, stress: data.metrics.stress, clarity: data.metrics.speech_clarity },
+          ]);
+        }
+        if (data.suggestion) setMicroSuggestion(data.suggestion);
+      } catch { /* polling error — ignore */ }
+    };
+
+    // Fetch immediately when answer changes meaningfully, then poll
+    fetchMetrics();
+    const interval = setInterval(fetchMetrics, 5000);
+
+    return () => clearInterval(interval);
+  }, [phase, sessionId, answer, cameraOn]);
+
+  // ── Eye-tracking alert: warn when attention is low ──
+  useEffect(() => {
+    if (!liveMetrics || phase !== 'interview') {
+      setEyeTrackAlert(false);
+      return;
+    }
+
+    const attention = liveMetrics.attention ?? 100;
+    const ATTENTION_THRESHOLD = 40;
+
+    if (attention < ATTENTION_THRESHOLD) {
+      // Show alert after 3s of sustained low attention (avoid flicker)
+      if (!eyeTrackTimeoutRef.current) {
+        eyeTrackTimeoutRef.current = setTimeout(() => {
+          eyeTrackTimeoutRef.current = null; // Reset ref after firing
+          setEyeTrackAlert(true);
+          toast('👁️ Please look at the camera to maintain eye contact', { icon: '⚠️', duration: 3000 });
+        }, 3000);
+      }
+    } else {
+      // Attention recovered — clear alert immediately
+      if (eyeTrackTimeoutRef.current) {
+        clearTimeout(eyeTrackTimeoutRef.current);
+        eyeTrackTimeoutRef.current = null;
+      }
+      setEyeTrackAlert(false);
+    }
+
+    return () => {
+      if (eyeTrackTimeoutRef.current) {
+        clearTimeout(eyeTrackTimeoutRef.current);
+        eyeTrackTimeoutRef.current = null;
+      }
+    };
+  }, [liveMetrics?.attention, phase]);
+
+  // ── Track scores for chart ─────────────────────────
+  useEffect(() => {
+    if (evaluation?.overall_score) {
+      setScoreHistory(prev => [...prev, { q: `Q${questionNumber}`, score: Math.round(evaluation.overall_score) }]);
+    }
+  }, [evaluation?.overall_score]);
+
+  // ── Metric helpers ─────────────────────────────────
+  const getMetricColor = (v, inv = false) => { const x = inv ? 100 - v : v; return x >= 70 ? 'text-green-400' : x >= 45 ? 'text-yellow-500' : 'text-red-500'; };
+  const getMetricBg = (v, inv = false) => { const x = inv ? 100 - v : v; return x >= 70 ? 'bg-green-500' : x >= 45 ? 'bg-yellow-500' : 'bg-red-500'; };
+
+  // ── Derived state for interview phase ──────────────
+  const isCoding = currentQuestion?.is_coding;
+
+  const radarData = liveMetrics ? [
+    { metric: 'Confidence', value: liveMetrics.confidence },
+    { metric: 'Attention', value: liveMetrics.attention },
+    { metric: 'Clarity', value: liveMetrics.speech_clarity },
+    { metric: 'Stability', value: liveMetrics.emotional_stability },
+    { metric: 'Completeness', value: liveMetrics.answer_completeness },
+  ] : [];
+
+  // ── Request permissions and start interview ────────
   const startInterview = async () => {
+    setPermissionDenied(false);
+    setPermissionError('');
+
+    // Request camera + mic permissions first
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      streamRef.current = stream;
+      if (videoRef.current) videoRef.current.srcObject = stream;
+      setCameraOn(true);
+    } catch (err) {
+      setPermissionDenied(true);
+      if (err.name === 'NotAllowedError') {
+        setPermissionError('Camera and microphone access is required to start the interview. Please allow access in your browser settings and try again.');
+      } else if (err.name === 'NotFoundError') {
+        setPermissionError('No camera or microphone found. Please connect a camera and microphone to start the interview.');
+      } else {
+        setPermissionError(`Unable to access camera/microphone: ${err.message}. Please check your device settings.`);
+      }
+      return;
+    }
+
     setLoading(true);
     try {
       const res = await mockAPI.start({
@@ -184,6 +410,8 @@ export default function MockInterview() {
         job_description: jobDescription || undefined,
         experience_level: experienceLevel || undefined,
         duration_minutes: durationMinutes,
+        github_url: githubUrl || undefined,
+        linkedin_url: linkedinUrl || undefined,
       });
       setSessionId(res.data.session_id);
       setCurrentQuestion(res.data.question);
@@ -201,15 +429,21 @@ export default function MockInterview() {
     }
   };
 
-  // ── Submit answer ──────────────────────────────────
-  const submitAnswer = async () => {
+  // ── Submit answer (called manually or by silence detection) ──
+  const doSubmit = async (answerText) => {
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+
     const isCoding = currentQuestion?.is_coding;
-    if (!isCoding && !answer.trim()) {
-      toast.error('Please speak your answer using the microphone');
-      return;
+    const finalAnswer = answerText || answerRef.current;
+
+    if (!isCoding && !finalAnswer.trim()) {
+      isSubmittingRef.current = false;
+      return; // Nothing to submit yet
     }
     if (isCoding && !codeText.trim()) {
       toast.error('Please write your code solution');
+      isSubmittingRef.current = false;
       return;
     }
 
@@ -221,7 +455,7 @@ export default function MockInterview() {
     try {
       const payload = {
         question_id: currentQuestion.question_id,
-        answer_text: isCoding ? (answer || 'Code submitted') : answer,
+        answer_text: isCoding ? (finalAnswer || 'Code submitted') : finalAnswer,
       };
       if (isCoding) {
         payload.code_text = codeText;
@@ -253,16 +487,22 @@ export default function MockInterview() {
             setCurrentQuestion(res.data.next_question);
             setQuestionNumber((prev) => prev + 1);
             setAnswer('');
+            answerRef.current = '';
             setCodeText('');
             setEvaluation(null);
+            setLiveMetrics(null);
+            setMicroSuggestion('');
           }, 3000);
         } else {
           setTimeout(() => {
             setCurrentQuestion(res.data.next_question);
             setQuestionNumber((prev) => prev + 1);
             setAnswer('');
+            answerRef.current = '';
             setCodeText('');
             setEvaluation(null);
+            setLiveMetrics(null);
+            setMicroSuggestion('');
           }, 3000);
         }
       }
@@ -270,8 +510,17 @@ export default function MockInterview() {
       toast.error('Failed to submit answer');
     } finally {
       setLoading(false);
+      isSubmittingRef.current = false;
     }
   };
+
+  // Auto-submit triggered by silence detection
+  const submitAnswerAuto = useCallback(() => {
+    doSubmit(answerRef.current);
+  }, [currentQuestion, sessionId, codeText, codeLanguage, currentRound]);
+
+  // Manual submit (button click)
+  const submitAnswer = () => doSubmit(answer);
 
   // ── Format time ────────────────────────────────────
   const formatTime = (timeStatus) => {
@@ -338,6 +587,31 @@ export default function MockInterview() {
               />
             </div>
 
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">GitHub Profile (Optional)</label>
+                <input
+                  type="text"
+                  value={githubUrl}
+                  onChange={(e) => setGithubUrl(e.target.value)}
+                  placeholder="github.com/username or username"
+                  className="w-full px-4 py-3 bg-gray-50/80 border border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none text-sm transition-all"
+                />
+                <p className="text-xs text-gray-400 mt-1">We'll analyze your repos to tailor questions to your stack</p>
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">LinkedIn Profile (Optional)</label>
+                <input
+                  type="text"
+                  value={linkedinUrl}
+                  onChange={(e) => setLinkedinUrl(e.target.value)}
+                  placeholder="linkedin.com/in/username"
+                  className="w-full px-4 py-3 bg-gray-50/80 border border-gray-200 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none text-sm transition-all"
+                />
+                <p className="text-xs text-gray-400 mt-1">Links your professional profile for contextual questions</p>
+              </div>
+            </div>
+
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-semibold text-gray-700 mb-2">Difficulty</label>
@@ -380,6 +654,16 @@ export default function MockInterview() {
               </p>
               <p className="text-blue-700/80">The AI will ask questions using text-to-speech. Answer using your microphone — no typing needed except for coding questions. Camera captures your video for confidence analysis.</p>
             </div>
+
+            {permissionDenied && (
+              <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-800 flex items-start gap-3">
+                <AlertTriangle size={20} className="text-red-500 mt-0.5 shrink-0" />
+                <div>
+                  <p className="font-semibold mb-1">Permission Required</p>
+                  <p>{permissionError}</p>
+                </div>
+              </div>
+            )}
 
             <button
               onClick={startInterview}
@@ -483,10 +767,109 @@ export default function MockInterview() {
   }
 
   // ─── Interview Phase ───────────────────────────────
-  const isCoding = currentQuestion?.is_coding;
-
   return (
-    <div className="max-w-6xl mx-auto px-4 py-6">
+    <div className="flex h-screen overflow-hidden">
+    {/* ── Live Metrics Sidebar ─────────────────────── */}
+    <div className="w-72 bg-gray-900 text-white border-r border-gray-800 p-4 overflow-y-auto flex-shrink-0 hidden lg:block">
+      <h3 className="font-semibold mb-4 flex items-center gap-2 text-sm">
+        <Activity className="text-purple-400" size={16} />
+        Live Metrics
+      </h3>
+
+      {!liveMetrics ? (
+        <div className="text-center py-8">
+          <Brain className="mx-auto text-gray-600 mb-3" size={32} />
+          <p className="text-xs text-gray-500">Start speaking your answer to see live metrics</p>
+          <p className="text-[10px] text-gray-600 mt-1">Metrics update in real-time as you respond</p>
+        </div>
+      ) : (
+      <>
+      {/* Metric Bars */}
+      <div className="space-y-2.5 mb-5">
+        {[
+          { label: 'Confidence', key: 'confidence', icon: <TrendingUp size={12} /> },
+          { label: 'Stress', key: 'stress', icon: <AlertTriangle size={12} />, inv: true },
+          { label: 'Attention', key: 'attention', icon: <Eye size={12} /> },
+          { label: 'Stability', key: 'emotional_stability', icon: <Activity size={12} /> },
+          { label: 'Clarity', key: 'speech_clarity', icon: <Zap size={12} /> },
+          { label: 'Completeness', key: 'answer_completeness', icon: <Target size={12} /> },
+        ].map(m => (
+          <div key={m.key}>
+            <div className="flex items-center justify-between mb-0.5">
+              <span className="text-[10px] text-gray-400 flex items-center gap-1">{m.icon} {m.label}</span>
+              <span className={`text-[10px] font-bold ${getMetricColor(liveMetrics[m.key], m.inv)}`}>{Math.round(liveMetrics[m.key])}%</span>
+            </div>
+            <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+              <div className={`h-full rounded-full transition-all duration-700 ${getMetricBg(liveMetrics[m.key], m.inv)}`} style={{ width: `${liveMetrics[m.key]}%` }} />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Micro-suggestion */}
+      {microSuggestion && (
+        <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-2 mb-4">
+          <p className="text-[10px] text-yellow-200 flex items-start gap-1"><Zap size={10} className="mt-0.5 shrink-0 text-yellow-400" />{microSuggestion}</p>
+        </div>
+      )}
+
+      {/* Radar */}
+      <div className="bg-gray-800/60 rounded-lg p-2 mb-4">
+        <p className="text-[10px] text-gray-500 mb-1">Performance Radar</p>
+        <ResponsiveContainer width="100%" height={160}>
+          <RadarChart data={radarData}>
+            <PolarGrid stroke="#374151" />
+            <PolarAngleAxis dataKey="metric" tick={{ fill: '#9CA3AF', fontSize: 8 }} />
+            <PolarRadiusAxis domain={[0, 100]} tick={false} axisLine={false} />
+            <Radar dataKey="value" stroke="#a855f7" fill="#a855f7" fillOpacity={0.2} strokeWidth={1.5} />
+          </RadarChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Trend line */}
+      {metricsHistory.length > 3 && (
+        <div className="bg-gray-800/60 rounded-lg p-2 mb-4">
+          <p className="text-[10px] text-gray-500 mb-1">Trend</p>
+          <ResponsiveContainer width="100%" height={100}>
+            <LineChart data={metricsHistory.slice(-30)}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+              <XAxis dataKey="time" tick={false} />
+              <YAxis domain={[0, 100]} tick={{ fill: '#6B7280', fontSize: 8 }} />
+              <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px', fontSize: '10px' }} />
+              <Line type="monotone" dataKey="confidence" stroke="#22c55e" dot={false} strokeWidth={1.5} />
+              <Line type="monotone" dataKey="stress" stroke="#ef4444" dot={false} strokeWidth={1.5} />
+              <Line type="monotone" dataKey="clarity" stroke="#3b82f6" dot={false} strokeWidth={1.5} />
+            </LineChart>
+          </ResponsiveContainer>
+          <div className="flex gap-2 mt-1 justify-center">
+            <span className="text-[8px] text-green-400">● Confidence</span>
+            <span className="text-[8px] text-red-400">● Stress</span>
+            <span className="text-[8px] text-blue-400">● Clarity</span>
+          </div>
+        </div>
+      )}
+
+      {/* Score history */}
+      {scoreHistory.length > 0 && (
+        <div className="bg-gray-800/60 rounded-lg p-2">
+          <p className="text-[10px] text-gray-500 mb-1">Answer Scores</p>
+          <ResponsiveContainer width="100%" height={80}>
+            <BarChart data={scoreHistory}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+              <XAxis dataKey="q" tick={{ fill: '#6B7280', fontSize: 8 }} />
+              <YAxis domain={[0, 100]} tick={{ fill: '#6B7280', fontSize: 8 }} />
+              <Bar dataKey="score" fill="#a855f7" radius={[3, 3, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+      </>
+      )}
+    </div>
+
+    {/* ── Main Interview Content ───────────────────── */}
+    <div className="flex-1 overflow-y-auto px-4 py-6">
+    <div className="max-w-5xl mx-auto">
       {/* Top bar: Round + Timer */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center space-x-3">
@@ -568,31 +951,14 @@ export default function MockInterview() {
                 <span>AI Speaking...</span>
               </div>
             )}
-          </div>
-          <div className="flex gap-3 mt-3">
-            <button
-              onClick={toggleCamera}
-              className={`flex-1 py-2 rounded-lg text-sm font-medium flex items-center justify-center space-x-1 ${
-                cameraOn ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'
-              }`}
-            >
-              <Camera size={16} />
-              <span>{cameraOn ? 'Camera On' : 'Camera Off'}</span>
-            </button>
-            <button
-              onClick={toggleRecording}
-              disabled={isCoding}
-              className={`flex-1 py-2.5 rounded-lg text-sm font-medium flex items-center justify-center space-x-1 transition ${
-                isRecording
-                  ? 'bg-red-500 text-white animate-pulse'
-                  : isCoding
-                  ? 'bg-gray-50 text-gray-300 cursor-not-allowed'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}
-            >
-              {isRecording ? <MicOff size={16} /> : <Mic size={16} />}
-              <span>{isRecording ? 'Stop' : 'Speak'}</span>
-            </button>
+            {eyeTrackAlert && !isSpeaking && (
+              <div className="absolute inset-0 flex items-center justify-center bg-red-900/40 backdrop-blur-[2px] animate-pulse">
+                <div className="bg-red-600/90 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center space-x-2 shadow-lg">
+                  <Eye size={18} />
+                  <span>Look at the camera</span>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* AI Interviewer card */}
@@ -671,22 +1037,56 @@ export default function MockInterview() {
             </div>
           ) : (
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Your Answer <span className="text-gray-400">(speak using microphone — live transcript below)</span>
-              </label>
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-sm font-medium text-gray-700">
+                  Your Answer <span className="text-gray-400">(live conversation mode)</span>
+                </label>
+                <div className="flex items-center gap-2">
+                  {isRecording && (
+                    <span className="flex items-center gap-1.5 px-3 py-1.5 bg-green-100 text-green-700 rounded-full text-xs font-medium">
+                      <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                      Listening
+                    </span>
+                  )}
+                  {isSpeaking && (
+                    <span className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">
+                      <Volume2 size={12} className="animate-pulse" />
+                      AI Speaking
+                    </span>
+                  )}
+                  <button
+                    onClick={toggleRecording}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition ${
+                      isRecording ? 'bg-red-100 text-red-600 hover:bg-red-200' : 'bg-primary-100 text-primary-700 hover:bg-primary-200'
+                    }`}
+                    title={isRecording ? 'Pause mic' : 'Resume mic'}
+                  >
+                    {isRecording ? <MicOff size={14} /> : <Mic size={14} />}
+                    {isRecording ? 'Pause' : 'Resume'}
+                  </button>
+                </div>
+              </div>
               <div className={`w-full min-h-[120px] px-4 py-3 border rounded-lg text-gray-700 text-base leading-relaxed ${
-                isRecording ? 'border-red-400 bg-red-50' : 'border-gray-200 bg-gray-50'
+                isRecording ? 'border-green-400 bg-green-50/50' : isSpeaking ? 'border-blue-300 bg-blue-50/30' : 'border-gray-200 bg-gray-50'
               }`}>
                 {answer || (
                   <span className="text-gray-400 italic">
-                    {isRecording ? 'Listening... speak now' : 'Click "Speak" to start answering with your voice'}
+                    {isSpeaking ? 'AI is speaking... listen to the question' : isRecording ? '🎤 Listening... speak your answer naturally' : 'Microphone paused'}
                   </span>
                 )}
               </div>
-              {isRecording && (
-                <div className="flex items-center space-x-2 mt-2 text-red-600 text-sm">
-                  <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
-                  <span>Recording... speak your answer</span>
+              {isRecording && !isSpeaking && (
+                <div className="flex items-center justify-between mt-2">
+                  <div className="flex items-center space-x-2 text-green-600 text-sm">
+                    <div className="w-2.5 h-2.5 bg-green-500 rounded-full animate-pulse"></div>
+                    <span>Speak naturally — answer auto-submits after you pause</span>
+                  </div>
+                </div>
+              )}
+              {loading && (
+                <div className="flex items-center space-x-2 mt-2 text-primary-600 text-sm">
+                  <Loader2 size={14} className="animate-spin" />
+                  <span>Evaluating your answer...</span>
                 </div>
               )}
               <button
@@ -695,7 +1095,7 @@ export default function MockInterview() {
                 className="mt-4 w-full gradient-bg text-white py-3 rounded-xl font-semibold flex items-center justify-center space-x-2 hover:opacity-90 transition disabled:opacity-50"
               >
                 {loading ? <Loader2 className="animate-spin" size={20} /> : <Send size={18} />}
-                <span>{loading ? 'Evaluating...' : 'Submit Answer'}</span>
+                <span>{loading ? 'Evaluating...' : 'Submit Early'}</span>
               </button>
             </div>
           )}
@@ -736,6 +1136,8 @@ export default function MockInterview() {
           )}
         </div>
       </div>
+    </div>
+    </div>
     </div>
   );
 }

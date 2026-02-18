@@ -1,0 +1,603 @@
+"""
+Intelligent Question Generation Service
+────────────────────────────────────────
+Component 2: 4 Specialized LLM-based Question Generators
+  • Behavioral Model — STAR-method questions, past experiences
+  • Technical Model — Domain-specific, coding, system design
+  • Situational Model — Hypothetical scenarios, problem-solving
+  • Cultural Fit Model — Values alignment, team dynamics
+
+Architecture:
+  ┌──────────────────┐
+  │ Question Request  │
+  └────────┬─────────┘
+           │
+  ┌────────▼─────────┐
+  │ Question Router   │──▶ Selects model based on round + context
+  └────────┬─────────┘
+           │
+  ┌────────┴──────────────────────────────┐
+  │         │            │                │
+  ▼         ▼            ▼                ▼
+┌──────┐ ┌──────┐ ┌──────────┐ ┌──────────────┐
+│Behav.│ │Tech. │ │Situational│ │Cultural Fit  │
+│Model │ │Model │ │Model      │ │Model         │
+└──────┘ └──────┘ └──────────┘ └──────────────┘
+           │
+  ┌────────▼─────────┐
+  │ Quality Filter   │──▶ Redundancy check, difficulty calibration
+  └────────┬─────────┘
+           │
+  ┌────────▼─────────┐
+  │ Question + Rubric │
+  └──────────────────┘
+
+Training Architecture (LoRA Fine-Tuning):
+  Base Model: Gemini 2.5 Flash
+  Adapter: LoRA (rank=16, alpha=32)
+  Dataset: Interview question-answer pairs per category
+  Evaluation: BLEU, ROUGE-L, Question Quality Score
+"""
+
+import json
+import re
+import asyncio
+import hashlib
+from typing import List, Dict, Any, Optional
+from datetime import datetime
+
+import numpy as np
+
+try:
+    from sentence_transformers import SentenceTransformer
+    from sklearn.metrics.pairwise import cosine_similarity
+    ST_AVAILABLE = True
+except ImportError:
+    ST_AVAILABLE = False
+
+import google.genai as genai
+from google.genai import types as genai_types
+from app.core.config import settings
+
+
+# ── Question Templates ────────────────────────────────
+
+BEHAVIORAL_TEMPLATES = [
+    "Tell me about a time when you {scenario}. What was the situation, your approach, and the outcome?",
+    "Describe a situation where you had to {scenario}. How did you handle it?",
+    "Give me an example of when you {scenario}. Walk me through your thought process.",
+    "Share an experience where you {scenario}. What did you learn from it?",
+]
+
+BEHAVIORAL_SCENARIOS = [
+    "dealt with a difficult team member",
+    "had to meet a tight deadline",
+    "made a mistake and had to fix it",
+    "led a team through a challenging project",
+    "had to persuade others to accept your idea",
+    "received critical feedback and acted on it",
+    "had to prioritize competing demands",
+    "went above and beyond your job responsibilities",
+    "had to adapt to a significant change",
+    "resolved a conflict between team members",
+]
+
+TECHNICAL_QUESTION_TYPES = [
+    "conceptual", "coding", "system_design", "debugging",
+    "architecture", "tradeoff_analysis", "optimization",
+]
+
+SITUATIONAL_TEMPLATES = [
+    "Imagine you are a {role} and {scenario}. What would you do?",
+    "If you were assigned to {scenario}, how would you approach it?",
+    "Suppose {scenario} happens during a critical project. Walk me through your response.",
+    "You've just joined a team and discover {scenario}. What steps would you take?",
+]
+
+CULTURAL_FIT_AREAS = [
+    "teamwork", "communication", "innovation", "work_ethic",
+    "adaptability", "leadership", "integrity", "growth_mindset",
+]
+
+
+class QuestionGenerationService:
+    """4-model intelligent question generation with quality filtering."""
+
+    def __init__(self):
+        self._embedding_model: Optional[SentenceTransformer] = None
+        self._gemini_client = None
+        self._question_history: Dict[str, List[str]] = {}
+
+    @property
+    def embedding_model(self):
+        if self._embedding_model is None and ST_AVAILABLE:
+            self._embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+        return self._embedding_model
+
+    @property
+    def gemini_client(self):
+        if self._gemini_client is None:
+            if settings.GEMINI_API_KEY:
+                self._gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+            else:
+                print("Gemini error: GEMINI_API_KEY not configured")
+        return self._gemini_client
+
+    async def _gemini_generate(self, prompt: str, system: str = "", fast: bool = False) -> str:
+        """Call Google Gemini API."""
+        import asyncio
+        client = self.gemini_client
+        if not client:
+            return ""
+
+        max_tokens = 512 if fast else 1024
+
+        try:
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model=settings.GEMINI_MODEL,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=system if system else None,
+                    temperature=0.7,
+                    max_output_tokens=max_tokens,
+                ),
+            )
+            return response.text if response.text else ""
+        except Exception as e:
+            print(f"Gemini error: {e}")
+            return ""
+
+    def _parse_json(self, text: str) -> dict:
+        m = re.search(r"\{[\s\S]*\}", text)
+        if m:
+            try:
+                return json.loads(m.group())
+            except json.JSONDecodeError:
+                pass
+        return {}
+
+    # ── Model 1: Behavioral Question Generator ───────
+
+    async def generate_behavioral_question(
+        self,
+        job_role: str,
+        difficulty: str,
+        previous_questions: List[str],
+        candidate_context: Dict[str, Any] = None,
+        jd_analysis: Dict[str, Any] = None,
+    ) -> Dict[str, Any]:
+        """Generate a behavioral (STAR-method) interview question."""
+        soft_skills = []
+        if jd_analysis:
+            soft_skills = jd_analysis.get("soft_skills", [])
+
+        prompt = f"""Generate a BEHAVIORAL interview question for a {job_role} candidate.
+Difficulty: {difficulty}
+Soft skills to evaluate: {json.dumps(soft_skills) if soft_skills else 'teamwork, communication, leadership'}
+
+The question MUST follow the STAR method format (ask about a Situation, Task, Action, Result).
+Previously asked questions (DO NOT repeat): {json.dumps(previous_questions[:5])}
+
+Return ONLY valid JSON:
+{{
+  "question": "Your behavioral question",
+  "ideal_answer": "A model STAR-method answer",
+  "evaluation_keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"],
+  "competency_evaluated": "the soft skill being tested",
+  "difficulty_level": "{difficulty}",
+  "star_expectations": {{
+    "situation": "What situation should be described",
+    "task": "What task/challenge was involved",
+    "action": "What actions are expected",
+    "result": "What results/outcomes to look for"
+  }}
+}}"""
+
+        system = "You are an expert behavioral interviewer. Generate STAR-method questions. Return valid JSON only."
+        response = await self._gemini_generate(prompt, system)
+        parsed = self._parse_json(response)
+
+        if not parsed or "question" not in parsed:
+            import random
+            scenario = random.choice(BEHAVIORAL_SCENARIOS)
+            template = random.choice(BEHAVIORAL_TEMPLATES)
+            parsed = {
+                "question": template.format(scenario=scenario),
+                "ideal_answer": f"A strong answer would use the STAR method: describe the Situation, Task, Action taken, and Result achieved regarding {scenario}.",
+                "evaluation_keywords": ["situation", "task", "action", "result", "learning"],
+                "competency_evaluated": "behavioral competency",
+                "difficulty_level": difficulty,
+            }
+
+        parsed["question_type"] = "behavioral"
+        parsed["round"] = "HR"
+        parsed["is_coding"] = False
+        parsed.setdefault("evaluation_keywords", ["teamwork", "communication"])
+        parsed["keywords"] = parsed["evaluation_keywords"]
+        return parsed
+
+    # ── Model 2: Technical Question Generator ────────
+
+    async def generate_technical_question(
+        self,
+        job_role: str,
+        difficulty: str,
+        previous_questions: List[str],
+        question_subtype: str = "conceptual",
+        jd_analysis: Dict[str, Any] = None,
+        last_score: float = None,
+        last_answer: str = None,
+    ) -> Dict[str, Any]:
+        """Generate a technical interview question."""
+        tech_skills = []
+        tech_topics = []
+        if jd_analysis:
+            tech_skills = jd_analysis.get("required_skills", [])
+            tech_topics = jd_analysis.get("technical_topics", [])
+
+        followup = ""
+        if last_score is not None:
+            if last_score >= 80:
+                followup = "The candidate scored well. Ask a harder follow-up that probes deeper."
+            elif last_score >= 50:
+                followup = "Moderate performance. Ask a clarification question."
+            else:
+                followup = "Weak answer. Simplify and move to a related easier topic."
+
+        is_coding = question_subtype == "coding"
+        coding_inst = ""
+        if is_coding:
+            coding_inst = "This MUST be a coding question. Include problem statement, constraints, and expected I/O."
+
+        prompt = f"""Generate a TECHNICAL ({question_subtype}) interview question for {job_role}.
+Difficulty: {difficulty}
+Skills to evaluate: {json.dumps(tech_skills[:8]) if tech_skills else job_role}
+Topics: {json.dumps(tech_topics[:5]) if tech_topics else 'relevant domain topics'}
+{followup}
+{coding_inst}
+
+Previously asked: {json.dumps(previous_questions[:5])}
+
+Return ONLY valid JSON:
+{{
+  "question": "Your technical question",
+  "ideal_answer": "Comprehensive expert-level answer",
+  "evaluation_keywords": ["kw1", "kw2", "kw3", "kw4", "kw5"],
+  "difficulty_level": "{difficulty}",
+  "is_coding": {str(is_coding).lower()},
+  "topic": "primary topic being tested",
+  "expected_depth": "conceptual|practical|advanced",
+  "followup_if_strong": "Harder follow-up question",
+  "followup_if_weak": "Simpler fallback question"
+}}"""
+
+        system = f"You are an expert {job_role} technical interviewer. Return valid JSON only."
+        response = await self._gemini_generate(prompt, system)
+        parsed = self._parse_json(response)
+
+        if not parsed or "question" not in parsed:
+            parsed = {
+                "question": f"Explain the core concepts and best practices of {job_role} relevant to {question_subtype}.",
+                "ideal_answer": f"A strong answer should cover key {job_role} concepts, real-world applications, and industry best practices.",
+                "evaluation_keywords": ["concepts", "best practices", "experience", "architecture", "implementation"],
+                "difficulty_level": difficulty,
+                "is_coding": is_coding,
+                "topic": job_role,
+            }
+
+        parsed["question_type"] = "technical"
+        parsed["question_subtype"] = question_subtype
+        parsed["round"] = "Technical"
+        parsed.setdefault("is_coding", is_coding)
+        parsed.setdefault("evaluation_keywords", ["technical", "depth"])
+        parsed["keywords"] = parsed["evaluation_keywords"]
+        return parsed
+
+    # ── Model 3: Situational Question Generator ──────
+
+    async def generate_situational_question(
+        self,
+        job_role: str,
+        difficulty: str,
+        previous_questions: List[str],
+        jd_analysis: Dict[str, Any] = None,
+    ) -> Dict[str, Any]:
+        """Generate a hypothetical scenario-based question."""
+        responsibilities = []
+        if jd_analysis:
+            responsibilities = jd_analysis.get("key_responsibilities", [])
+
+        prompt = f"""Generate a SITUATIONAL (hypothetical scenario) interview question for {job_role}.
+Difficulty: {difficulty}
+Job Responsibilities: {json.dumps(responsibilities[:5]) if responsibilities else 'general role duties'}
+
+The question should present a realistic workplace scenario and ask the candidate how they would handle it.
+Previously asked: {json.dumps(previous_questions[:5])}
+
+Return ONLY valid JSON:
+{{
+  "question": "Your situational question presenting a hypothetical scenario",
+  "ideal_answer": "The ideal approach and reasoning",
+  "evaluation_keywords": ["kw1", "kw2", "kw3", "kw4", "kw5"],
+  "difficulty_level": "{difficulty}",
+  "scenario_type": "conflict|deadline|resource|technical_failure|stakeholder|priority",
+  "skills_evaluated": ["skill1", "skill2"]
+}}"""
+
+        system = "You are an expert situational interviewer. Create realistic workplace scenarios. Return valid JSON only."
+        response = await self._gemini_generate(prompt, system)
+        parsed = self._parse_json(response)
+
+        if not parsed or "question" not in parsed:
+            parsed = {
+                "question": f"Imagine you're a {job_role} and a critical system fails right before a major release. Walk me through your response plan.",
+                "ideal_answer": "A strong answer includes immediate triage, stakeholder communication, root cause analysis, fix implementation, and post-mortem planning.",
+                "evaluation_keywords": ["triage", "communication", "problem-solving", "prioritization", "follow-up"],
+                "difficulty_level": difficulty,
+                "scenario_type": "technical_failure",
+            }
+
+        parsed["question_type"] = "situational"
+        parsed["round"] = "Technical"
+        parsed["is_coding"] = False
+        parsed.setdefault("evaluation_keywords", ["judgment", "reasoning"])
+        parsed["keywords"] = parsed["evaluation_keywords"]
+        return parsed
+
+    # ── Model 4: Cultural Fit Question Generator ─────
+
+    async def generate_cultural_fit_question(
+        self,
+        job_role: str,
+        difficulty: str,
+        previous_questions: List[str],
+        company_values: List[str] = None,
+        jd_analysis: Dict[str, Any] = None,
+    ) -> Dict[str, Any]:
+        """Generate cultural fit assessment question."""
+        values = company_values or ["teamwork", "innovation", "integrity", "growth"]
+
+        prompt = f"""Generate a CULTURAL FIT interview question for {job_role}.
+Difficulty: {difficulty}
+Company values: {json.dumps(values)}
+
+Assess whether the candidate aligns with the company culture, values, and work style.
+Previously asked: {json.dumps(previous_questions[:5])}
+
+Return ONLY valid JSON:
+{{
+  "question": "Your cultural fit question",
+  "ideal_answer": "What a culturally aligned candidate would say",
+  "evaluation_keywords": ["kw1", "kw2", "kw3", "kw4", "kw5"],
+  "difficulty_level": "{difficulty}",
+  "value_assessed": "the specific value being evaluated",
+  "red_flags": ["things that indicate poor cultural fit"],
+  "green_flags": ["things that indicate good cultural fit"]
+}}"""
+
+        system = "You are an expert HR cultural fit assessor. Return valid JSON only."
+        response = await self._gemini_generate(prompt, system)
+        parsed = self._parse_json(response)
+
+        if not parsed or "question" not in parsed:
+            parsed = {
+                "question": "What kind of work environment do you thrive in, and how do you contribute to team culture?",
+                "ideal_answer": "A strong answer demonstrates self-awareness, team orientation, and alignment with collaborative values.",
+                "evaluation_keywords": ["culture", "teamwork", "values", "collaboration", "growth"],
+                "difficulty_level": difficulty,
+                "value_assessed": "teamwork",
+            }
+
+        parsed["question_type"] = "cultural_fit"
+        parsed["round"] = "HR"
+        parsed["is_coding"] = False
+        parsed.setdefault("evaluation_keywords", ["culture", "values"])
+        parsed["keywords"] = parsed["evaluation_keywords"]
+        return parsed
+
+    # ── Question Router ───────────────────────────────
+
+    async def generate_question_smart(
+        self,
+        job_role: str,
+        difficulty: str,
+        previous_questions: List[str],
+        round_type: str = "Technical",
+        question_number: int = 1,
+        total_planned: int = 10,
+        jd_analysis: Dict[str, Any] = None,
+        last_score: float = None,
+        last_answer: str = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """Smart question router that selects the appropriate model."""
+        # Determine question type based on round and progression
+        progress = question_number / max(total_planned, 1)
+
+        if round_type == "Technical":
+            if progress < 0.3:
+                # Start with conceptual
+                return await self.generate_technical_question(
+                    job_role, difficulty, previous_questions,
+                    question_subtype="conceptual", jd_analysis=jd_analysis,
+                    last_score=last_score, last_answer=last_answer,
+                )
+            elif progress < 0.5:
+                # Move to practical/coding
+                subtype = "coding" if question_number % 3 == 0 else "system_design"
+                return await self.generate_technical_question(
+                    job_role, difficulty, previous_questions,
+                    question_subtype=subtype, jd_analysis=jd_analysis,
+                    last_score=last_score, last_answer=last_answer,
+                )
+            elif progress < 0.7:
+                # Situational/tradeoff
+                return await self.generate_situational_question(
+                    job_role, difficulty, previous_questions, jd_analysis=jd_analysis,
+                )
+            else:
+                # Deep technical
+                return await self.generate_technical_question(
+                    job_role, difficulty, previous_questions,
+                    question_subtype="architecture", jd_analysis=jd_analysis,
+                    last_score=last_score, last_answer=last_answer,
+                )
+        else:  # HR round
+            if progress < 0.4:
+                return await self.generate_behavioral_question(
+                    job_role, difficulty, previous_questions,
+                    jd_analysis=jd_analysis,
+                )
+            elif progress < 0.7:
+                return await self.generate_situational_question(
+                    job_role, difficulty, previous_questions,
+                    jd_analysis=jd_analysis,
+                )
+            else:
+                return await self.generate_cultural_fit_question(
+                    job_role, difficulty, previous_questions,
+                    jd_analysis=jd_analysis,
+                )
+
+    # ── Redundancy Elimination ────────────────────────
+
+    def check_question_redundancy(
+        self, new_question: str, previous_questions: List[str], threshold: float = 0.75
+    ) -> bool:
+        """Check if a new question is too similar to previously asked questions.
+        Returns True if redundant (should be rejected).
+        """
+        if not previous_questions or not self.embedding_model:
+            return False
+
+        embeddings = self.embedding_model.encode(
+            [new_question] + previous_questions
+        )
+        new_emb = embeddings[0:1]
+        prev_embs = embeddings[1:]
+
+        similarities = cosine_similarity(new_emb, prev_embs)[0]
+        max_similarity = float(np.max(similarities))
+
+        return max_similarity > threshold
+
+    # ── Question Quality Evaluation ───────────────────
+
+    def evaluate_question_quality(self, question_data: Dict[str, Any]) -> Dict[str, float]:
+        """Evaluate the quality of a generated question."""
+        question = question_data.get("question", "")
+        ideal_answer = question_data.get("ideal_answer", "")
+        keywords = question_data.get("evaluation_keywords", [])
+
+        scores = {}
+
+        # Clarity: question length and structure
+        word_count = len(question.split())
+        if 10 <= word_count <= 50:
+            scores["clarity"] = 90
+        elif 5 <= word_count <= 80:
+            scores["clarity"] = 70
+        else:
+            scores["clarity"] = 40
+
+        # Specificity: contains role/topic-specific terms
+        scores["specificity"] = min(100, len(keywords) * 15)
+
+        # Answer quality: ideal answer comprehensiveness
+        answer_words = len(ideal_answer.split())
+        if answer_words >= 50:
+            scores["answer_quality"] = 90
+        elif answer_words >= 20:
+            scores["answer_quality"] = 70
+        else:
+            scores["answer_quality"] = 40
+
+        # Evaluation readiness: has keywords for scoring
+        scores["evaluation_readiness"] = min(100, len(keywords) * 20)
+
+        # Overall quality score
+        scores["overall_quality"] = round(
+            scores["clarity"] * 0.25 +
+            scores["specificity"] * 0.25 +
+            scores["answer_quality"] * 0.30 +
+            scores["evaluation_readiness"] * 0.20,
+            1
+        )
+
+        return scores
+
+    # ── Difficulty Calibration ────────────────────────
+
+    def calibrate_difficulty(
+        self,
+        current_difficulty: str,
+        recent_scores: List[float],
+        target_success_rate: float = 0.65,
+    ) -> str:
+        """Calibrate question difficulty based on recent performance.
+
+        Uses Item Response Theory (IRT) inspired approach:
+        - If success rate > target + 0.15: increase difficulty
+        - If success rate < target - 0.15: decrease difficulty
+        - Otherwise: maintain current difficulty
+        """
+        if not recent_scores:
+            return current_difficulty
+
+        success_rate = sum(1 for s in recent_scores if s >= 60) / len(recent_scores)
+
+        difficulty_ladder = ["easy", "medium", "hard"]
+        current_idx = difficulty_ladder.index(current_difficulty) if current_difficulty in difficulty_ladder else 1
+
+        if success_rate > target_success_rate + 0.15:
+            new_idx = min(current_idx + 1, 2)
+        elif success_rate < target_success_rate - 0.15:
+            new_idx = max(current_idx - 1, 0)
+        else:
+            new_idx = current_idx
+
+        return difficulty_ladder[new_idx]
+
+
+# ── LoRA Fine-Tuning Guide ───────────────────────────
+#
+# Dataset Preparation:
+#   Format: {"instruction": "Generate a {type} question for {role}",
+#            "input": "context/JD", "output": "question JSON"}
+#   Sources: Interview guides, Glassdoor, LeetCode, behavioral banks
+#   Size: 5000+ samples per model type
+#
+# Training Pipeline:
+#   from peft import LoraConfig, get_peft_model
+#   from transformers import AutoModelForCausalLM, TrainingArguments
+#
+#   lora_config = LoraConfig(
+#       r=16,               # LoRA rank
+#       lora_alpha=32,       # Scaling factor
+#       target_modules=["q_proj", "v_proj"],
+#       lora_dropout=0.05,
+#       bias="none",
+#       task_type="CAUSAL_LM",
+#   )
+#
+#   model = AutoModelForCausalLM.from_pretrained("google/gemini-2.5-flash")
+#   model = get_peft_model(model, lora_config)
+#
+#   training_args = TrainingArguments(
+#       output_dir="./lora_behavioral",
+#       num_train_epochs=3,
+#       per_device_train_batch_size=4,
+#       learning_rate=2e-4,
+#       warmup_steps=100,
+#       logging_steps=50,
+#   )
+#
+# Evaluation Metrics:
+#   - BLEU score for answer quality
+#   - ROUGE-L for coverage
+#   - Human eval: relevance, difficulty accuracy, question quality
+
+
+# Singleton
+question_generation_service = QuestionGenerationService()

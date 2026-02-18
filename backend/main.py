@@ -2,7 +2,7 @@
 AI Interview Platform — Optimized Main Application
 ────────────────────────────────────────────────────
   • AI models warm-loaded at startup for < 3s interview start
-  • Persistent Ollama connection pool
+  • Google Gemini API (gemini-2.5-flash) for LLM inference
   • CORS allows all origins for public access
   • Bind to 0.0.0.0 for network-wide access
 """
@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.database import connect_to_mongo, close_mongo_connection
-from app.routers import auth, interviews, mock_interview, websocket, candidate_interview
+from app.routers import auth, interviews, mock_interview, websocket, candidate_interview, practice_mode, analytics, data_collection
 from app.services.ai_service import ai_service
 
 
@@ -48,6 +48,9 @@ if settings.FRONTEND_URL:
         "http://localhost:5173",
         "http://localhost:3000",
     ]
+    # Also allow any Render subdomain
+    if ".onrender.com" not in (settings.FRONTEND_URL or ""):
+        origins.append("https://*.onrender.com")
 
 app.add_middleware(
     CORSMiddleware,
@@ -63,6 +66,9 @@ app.include_router(interviews.router)
 app.include_router(mock_interview.router)
 app.include_router(candidate_interview.router)
 app.include_router(websocket.router)
+app.include_router(practice_mode.router)
+app.include_router(analytics.router)
+app.include_router(data_collection.router)
 
 
 # ── Health check ──────────────────────────────────────
@@ -81,7 +87,7 @@ async def health():
     return {
         "status": "healthy",
         "ai_warmed": ai_service._warmed_up,
-        "ollama_url": settings.OLLAMA_BASE_URL,
+        "gemini_model": settings.GEMINI_MODEL,
     }
 
 
