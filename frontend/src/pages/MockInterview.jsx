@@ -61,6 +61,7 @@ export default function MockInterview() {
   const autoListenRef = useRef(false);       // whether to auto-listen after AI speaks
   const isSubmittingRef = useRef(false);      // prevent double-submit
   const answerRef = useRef('');               // track answer for silence-submit
+  const doSubmitRef = useRef(null);           // ref to latest doSubmit (avoids stale closures)
   const SILENCE_TIMEOUT = 3500;               // ms of silence before auto-submit
 
   const videoRef = useRef(null);
@@ -135,7 +136,8 @@ export default function MockInterview() {
             recognitionRef.current = null;
           }
           setIsRecording(false);
-          submitAnswerAuto();
+          // Use ref to always call the latest doSubmit
+          doSubmitRef.current(answerRef.current);
         }
       }, SILENCE_TIMEOUT);
     };
@@ -484,26 +486,11 @@ export default function MockInterview() {
           setPhase('round_transition');
           setTimeout(() => {
             setPhase('interview');
-            setCurrentQuestion(res.data.next_question);
-            setQuestionNumber((prev) => prev + 1);
-            setAnswer('');
-            answerRef.current = '';
-            setCodeText('');
-            setEvaluation(null);
-            setLiveMetrics(null);
-            setMicroSuggestion('');
-          }, 3000);
+            moveToNextQuestion(res.data.next_question);
+          }, 2000);
         } else {
-          setTimeout(() => {
-            setCurrentQuestion(res.data.next_question);
-            setQuestionNumber((prev) => prev + 1);
-            setAnswer('');
-            answerRef.current = '';
-            setCodeText('');
-            setEvaluation(null);
-            setLiveMetrics(null);
-            setMicroSuggestion('');
-          }, 3000);
+          // Move to next question immediately — TTS will speak it
+          moveToNextQuestion(res.data.next_question);
         }
       }
     } catch (err) {
@@ -514,10 +501,24 @@ export default function MockInterview() {
     }
   };
 
-  // Auto-submit triggered by silence detection
+  // Move to next question — shared helper to reset state
+  const moveToNextQuestion = (nextQ) => {
+    setCurrentQuestion(nextQ);
+    setQuestionNumber((prev) => prev + 1);
+    setAnswer('');
+    answerRef.current = '';
+    setCodeText('');
+    setEvaluation(null);
+    setLiveMetrics(null);
+    setMicroSuggestion('');
+  };
+
+  // Keep doSubmitRef pointing to latest doSubmit (avoids stale closures in timers)
+  useEffect(() => { doSubmitRef.current = doSubmit; });
+
   const submitAnswerAuto = useCallback(() => {
-    doSubmit(answerRef.current);
-  }, [currentQuestion, sessionId, codeText, codeLanguage, currentRound]);
+    doSubmitRef.current(answerRef.current);
+  }, []);
 
   // Manual submit (button click)
   const submitAnswer = () => doSubmit(answer);

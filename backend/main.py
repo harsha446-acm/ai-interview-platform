@@ -48,9 +48,10 @@ if settings.FRONTEND_URL:
         "http://localhost:5173",
         "http://localhost:3000",
     ]
-    # Also allow any Render subdomain
-    if ".onrender.com" not in (settings.FRONTEND_URL or ""):
-        origins.append("https://*.onrender.com")
+    # Also allow cloud platform subdomains (Render / Railway)
+    for domain in [".onrender.com", ".railway.app", ".up.railway.app"]:
+        if domain not in (settings.FRONTEND_URL or ""):
+            origins.append(f"https://*{domain}")
 
 app.add_middleware(
     CORSMiddleware,
