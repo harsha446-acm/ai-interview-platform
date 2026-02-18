@@ -16,7 +16,8 @@
     "socket.io-client": "^4.7.2",
     "react-hot-toast": "^2.4.1",
     "lucide-react": "^0.294.0",
-    "recharts": "^2.10.3"
+    "recharts": "^2.10.3",
+    "serve": "^14.2.0"
   },
   "devDependencies": {
     "@types/react": "^18.2.37",
