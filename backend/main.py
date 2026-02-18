@@ -47,21 +47,17 @@ app = FastAPI(
 )
 
 # ── CORS — allow frontend origin + local dev ─────────
-origins = ["*"]
+origins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+]
 if settings.FRONTEND_URL:
-    origins = [
-        settings.FRONTEND_URL,
-        "http://localhost:5173",
-        "http://localhost:3000",
-    ]
-    # Also allow Railway subdomains
-    for domain in [".railway.app", ".up.railway.app"]:
-        if domain not in (settings.FRONTEND_URL or ""):
-            origins.append(f"https://*{domain}")
+    origins.append(settings.FRONTEND_URL)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=r"https://.*\.railway\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
