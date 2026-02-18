@@ -83,9 +83,13 @@ export default function CandidateJoin() {
   const speakQuestion = useCallback((text) => {
     if (!ttsEnabled || !text) return;
     // Stop listening while AI speaks
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
     if (recognitionRef.current) {
       autoListenRef.current = false;
-      recognitionRef.current.stop();
+      try { recognitionRef.current.stop(); } catch {}
       recognitionRef.current = null;
       setIsRecording(false);
     }
@@ -118,12 +122,18 @@ export default function CandidateJoin() {
       toast.error('Speech recognition not supported in this browser');
       return;
     }
+    // Stop any existing recognition
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch {}
+      recognitionRef.current = null;
+    }
+
     const recognition = new SR();
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = 'en-US';
 
-    let finalTranscript = answer;
+    let finalTranscript = answerRef.current || '';
 
     recognition.onresult = (event) => {
       let interim = '';
@@ -135,20 +145,49 @@ export default function CandidateJoin() {
           interim += t;
         }
       }
-      setAnswer(finalTranscript.trim() + (interim ? ' ' + interim : ''));
+      const updated = finalTranscript.trim() + (interim ? ' ' + interim : '');
+      setAnswer(updated);
+
+      // Reset silence timer — auto-submit after user stops speaking
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      if (autoListenRef.current && updated.trim()) {
+        silenceTimerRef.current = setTimeout(() => {
+          if (autoListenRef.current && !isSubmittingRef.current && answerRef.current.trim()) {
+            submitAnswerAuto();
+          }
+        }, SILENCE_TIMEOUT);
+      }
     };
 
     recognition.onerror = (event) => {
-      if (event.error !== 'no-speech') console.error('Speech error:', event.error);
+      if (event.error !== 'no-speech' && event.error !== 'aborted') {
+        console.error('Speech error:', event.error);
+      }
     };
-    recognition.onend = () => setIsRecording(false);
+
+    recognition.onend = () => {
+      setIsRecording(false);
+      // Auto-restart if still in listening mode and not submitting
+      if (autoListenRef.current && !isSubmittingRef.current) {
+        setTimeout(() => {
+          if (autoListenRef.current && !isSubmittingRef.current) {
+            startSpeechRecognition();
+          }
+        }, 300);
+      }
+    };
 
     recognition.start();
     recognitionRef.current = recognition;
     setIsRecording(true);
-  }, [answer]);
+  }, []);
 
   const stopSpeechRecognition = useCallback(() => {
+    autoListenRef.current = false;
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
     if (recognitionRef.current) {
       recognitionRef.current.stop();
       recognitionRef.current = null;
@@ -199,6 +238,13 @@ export default function CandidateJoin() {
       return () => clearInterval(timeIntervalRef.current);
     }
   }, [phase, token]);
+
+  // ── Assign camera stream to video element when interview phase renders ──
+  useEffect(() => {
+    if (phase === 'interview' && videoRef.current && streamRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+    }
+  }, [phase, cameraOn]);
 
   // ── Speak question on change ───────────────────────
   useEffect(() => {
@@ -402,6 +448,13 @@ export default function CandidateJoin() {
   const doSubmit = async (answerText) => {
     if (isSubmittingRef.current) return;
     isSubmittingRef.current = true;
+
+    // Clear silence timer and stop listening while submitting
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+    autoListenRef.current = false;
 
     const isCoding = currentQuestion?.is_coding;
     const finalAnswer = answerText || answerRef.current;

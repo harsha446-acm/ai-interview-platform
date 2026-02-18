@@ -7,7 +7,11 @@ const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
 // WebSocket base URL: in production, point to the backend service directly
 // VITE_WS_URL should be like wss://ai-interview-backend.onrender.com
-export const WS_BASE = import.meta.env.VITE_WS_URL || '';
+// If not set, auto-derive from VITE_API_URL (https→wss, strip /api suffix)
+export const WS_BASE = import.meta.env.VITE_WS_URL ||
+  (import.meta.env.VITE_API_URL
+    ? import.meta.env.VITE_API_URL.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:').replace(/\/api\/?$/, '')
+    : '');
 
 const api = axios.create({
   baseURL: API_BASE,
