@@ -1,12 +1,12 @@
 import axios from 'axios';
 
-// In production, VITE_API_URL should be set to the backend URL
-// e.g. https://your-backend.up.railway.app/api  (Railway)
+// In production, VITE_API_URL should be set to the Render backend URL
+// e.g. https://ai-interview-backend.onrender.com/api
 // In development, Vite proxy handles /api → localhost:8000
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
 // WebSocket base URL: in production, point to the backend service directly
-// VITE_WS_URL should be like wss://your-backend.up.railway.app
+// VITE_WS_URL should be like wss://ai-interview-backend.onrender.com
 export const WS_BASE = import.meta.env.VITE_WS_URL || '';
 
 const api = axios.create({

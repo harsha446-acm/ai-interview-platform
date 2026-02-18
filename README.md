@@ -20,7 +20,7 @@ A production-ready web platform for AI-powered interview practice and corporate 
 | Vision       | OpenCV + DeepFace (emotion/confidence detection) |
 | Email        | aiosmtplib (Gmail SMTP)                          |
 | PDF          | fpdf2                                            |
-| Deployment   | Docker Compose / Railway (all free)               |
+| Deployment   | Docker Compose / Render (all free)                |
 
 ---
 
@@ -201,23 +201,22 @@ EMAIL_FROM=your-email@gmail.com
 
 ---
 
-## 🌐 Free Deployment (Railway)
+## 🌐 Free Deployment (Render)
 
-| Component   | Free Service              |
-| ----------- | ------------------------- |
-| Frontend    | Railway (railway.app)     |
-| Backend     | Railway (railway.app)     |
-| Database    | MongoDB Atlas Free        |
+| Component   | Free Service          |
+| ----------- | --------------------- |
+| Frontend    | Render (render.com)   |
+| Backend     | Render (render.com)   |
+| Database    | MongoDB Atlas Free    |
 | AI/LLM      | Google Gemini API (free tier available) |
 
-### Deploy on Railway
+### Deploy to Render
 1. Push to GitHub
-2. Go to [railway.app](https://railway.app) → **New Project** → **Deploy from GitHub Repo**
-3. Create **Backend service** (Root Directory: `backend`) — Railway auto-detects the Dockerfile
-4. Create **Frontend service** (Root Directory: `frontend`) — build command: `npm install && npm run build`
-5. Set environment variables on both services:
-   - **Backend**: `MONGODB_URL`, `JWT_SECRET_KEY`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `FRONTEND_URL`, `RESEND_API_KEY`, `EMAIL_PROVIDER`
-   - **Frontend**: `VITE_API_URL` (e.g. `https://backend.up.railway.app/api`), `VITE_WS_URL` (e.g. `wss://backend.up.railway.app`)
+2. Go to [dashboard.render.com](https://dashboard.render.com) → **New** → **Blueprint**
+3. Connect your repo → Render reads `render.yaml` and creates both services
+4. Set these environment variables:
+   - **Backend**: `MONGODB_URL` (Atlas connection string), `GEMINI_API_KEY`, `FRONTEND_URL`, `RESEND_API_KEY`
+   - **Frontend**: `VITE_API_URL` (e.g. `https://ai-interview-backend.onrender.com/api`), `VITE_WS_URL` (e.g. `wss://ai-interview-backend.onrender.com`)
 
 ---
 
