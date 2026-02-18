@@ -22,10 +22,16 @@ from app.services.ai_service import ai_service
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # STARTUP
-    await connect_to_mongo()
-    # Warm up AI models so first interview starts in < 3 seconds
-    await ai_service.warm_up()
+    # STARTUP — don't crash if external services are slow
+    try:
+        await connect_to_mongo()
+    except Exception as e:
+        print(f"⚠️ MongoDB connection failed on startup: {e}")
+        print("   App will retry on first request")
+    try:
+        await ai_service.warm_up()
+    except Exception as e:
+        print(f"⚠️ AI warm-up failed: {e}")
     print("🚀 AI Interview Platform ready")
     yield
     # SHUTDOWN

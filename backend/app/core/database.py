@@ -7,7 +7,18 @@ db = None
 
 async def connect_to_mongo():
     global client, db
-    client = AsyncIOMotorClient(settings.MONGODB_URL)
+    mongo_url = settings.MONGODB_URL or "mongodb://localhost:27017"
+    extra = {}
+    if "mongodb+srv" in mongo_url:
+        extra["tls"] = True
+    client = AsyncIOMotorClient(
+        mongo_url,
+        serverSelectionTimeoutMS=60000,
+        connectTimeoutMS=30000,
+        socketTimeoutMS=30000,
+        retryWrites=True,
+        **extra,
+    )
     db = client[settings.DATABASE_NAME]
 
     # Create indexes
